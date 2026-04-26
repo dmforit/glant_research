@@ -1,21 +1,21 @@
 import torch
 from ml_collections import ConfigDict
 
-from configs.data_config import (
-    cora_config,
-    pubmed_config,
+from new_configs.data_config import (
     citeseer_config,
     computers_config,
+    cora_config,
     photo_config,
+    pubmed_config,
+    texas_config,
     wisconsin_config,
-    texas_config
 )
-from configs.model_config import glant_config
+from new_configs.model_config import glant_config
 
 
 def all_config() -> ConfigDict:
     config = ConfigDict()
-    config.device = torch.device('cuda:0')
+    config.device = torch.device("cuda:0")
 
     config.cora = cora_config()
     config.pubmed = pubmed_config()
@@ -29,7 +29,7 @@ def all_config() -> ConfigDict:
     config.experiments.runs = 20
 
     config.baselines = ConfigDict()
-    config.baselines.names = ['GLANT']
+    config.baselines.names = ["GLANT"]
     config.baselines.GLANT = glant_config()
 
     return config

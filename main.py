@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from configs.config import all_config
+from new_configs.config import all_config
 
 from train import meta_train
 from utils.model_utils import (
@@ -58,13 +58,14 @@ def apply_cli_overrides(config: Any, pargs: argparse.Namespace) -> None:
         print('Starting run with sampling method')
         config.baselines.names = ['GLANT']
         config.baselines.GLANT.load_samples = False
-        config.baselines.GLANT.select_method = pargs.method
-        config.baselines.GLANT.K_hops = 3
-        config.baselines.GLANT.num_heads = [8, 1]
+        config.baselines.GLANT.sampling_method = pargs.method
 
     if pargs.khop is not None:
-        config.baselines.GLANT.K_hops = pargs.khop
+        config.baselines.GLANT.max_hops = pargs.khop
         config.baselines.GLANT.load_samples = False
+
+    if pargs.heads is not None:
+        config.baselines.GLANT.heads = pargs.heads
 
     if pargs.model is not None:
         config.baselines.names = [pargs.model]
@@ -96,7 +97,7 @@ def get_selected_method(config: Any) -> Optional[str]:
     if model_config is None:
         return None
 
-    return getattr(model_config, 'select_method', None)
+    return getattr(model_config, 'sampling_method', None)
 
 
 def print_metrics(
@@ -147,7 +148,13 @@ if __name__ == '__main__':
         '--khop',
         type=int,
         default=None,
-        help='Override GLANT K-hop value',
+        help='Override GLANT max-hops value',
+    )
+    parser.add_argument(
+        '--heads',
+        type=int,
+        default=None,
+        help='Override GLANT attention heads',
     )
     parser.add_argument(
         '--checkpoint',

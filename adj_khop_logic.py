@@ -170,8 +170,8 @@ def get_K_adjs(
     device: torch.device = torch.device('cpu'),
 ) -> List[Tensor]:
     """Build sampled adjacency lists for each configured hop."""
-    num_hops = model_config.K_hops
-    method = model_config.select_method
+    num_hops = model_config.max_hops
+    method = model_config.sampling_method
     num_samples = adj_list.shape[-1]
     num_nodes = ds_config.num_nodes
 

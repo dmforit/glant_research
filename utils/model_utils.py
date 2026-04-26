@@ -9,7 +9,7 @@ import torch.nn as nn
 from ml_collections import ConfigDict
 from torch_geometric.nn.models import GAT, GCN
 
-from model import GLANT
+from new_model import GLANT
 
 
 Metrics = Dict[str, Dict[str, List[float]]]
@@ -89,17 +89,13 @@ def create_gat_model(
 ) -> nn.Module:
     """Create a PyG GAT model from config."""
     model_config = config.baselines.GAT
-    heads = model_config.num_heads
-    if isinstance(heads, list):
-        heads = heads[0]
-
     return GAT(
         in_channels=ds_config.in_channels,
-        hidden_channels=ds_config.hidden_channels,
+        hidden_channels=model_config.hidden_channels,
         num_layers=model_config.num_layers,
-        out_channels=ds_config.num_classes,
-        heads=heads,
-        dropout=model_config.drop_out,
+        out_channels=ds_config.out_channels,
+        heads=model_config.heads,
+        dropout=model_config.dropout,
     )
 
 
@@ -111,10 +107,10 @@ def create_gcn_model(
     model_config = config.baselines.GCN
     return GCN(
         in_channels=ds_config.in_channels,
-        hidden_channels=ds_config.hidden_channels,
+        hidden_channels=model_config.hidden_channels,
         num_layers=model_config.num_layers,
-        out_channels=ds_config.num_classes,
-        dropout=model_config.drop_out,
+        out_channels=ds_config.out_channels,
+        dropout=model_config.dropout,
     )
 
 
@@ -145,7 +141,6 @@ def create_multihop_gat_model(
         model_config,
         ds_config,
         device=config.device,
-        layer_type='multi_hop',
     )
 
 

@@ -24,7 +24,7 @@ FetchResult: TypeAlias = ConfigDict | list[Any]
 
 SPLITS = ("train", "val", "test")
 WEBKB = frozenset({"Texas", "Wisconsin"})
-MULTIHOP = frozenset({"HoGA_GAT", "HoGA_GRAND", "GLANT"})
+MULTIHOP = frozenset({"GLANT"})
 
 DS_CFG = {
     "Cora": "cora",
@@ -147,7 +147,7 @@ def pack(ds: Dataset, cfg: ConfigDict) -> ConfigDict:
             "train": graph.train_mask,
             "val": graph.val_mask,
             "test": graph.test_mask,
-            "num_classes": cfg.num_classes,
+            "out_channels": cfg.out_channels,
             "num_features": graph.num_features,
             "num_nodes": cfg.num_nodes,
             "name": cfg.name,
@@ -163,13 +163,13 @@ def mh_cfg(config: ConfigDict) -> Optional[ConfigDict]:
 
 
 def edge_dir(cfg: ConfigDict, model: ConfigDict) -> Path:
-    return Path(cfg.save_path) / model.select_method / "shared"
+    return Path(cfg.save_path) / model.sampling_method / "shared"
 
 
 def load_edges(ds: Dataset, model: ConfigDict, path: Path, device: torch.device) -> Edges:
     edges = [ds.edge_index.to(device=device, dtype=torch.int64)]
 
-    for hop in range(1, model.K_hops):
+    for hop in range(1, model.max_hops):
         edge = torch.load(path / str(hop)).to(device=device, dtype=torch.int64)
         edges.append(edge)
 

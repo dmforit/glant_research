@@ -1,16 +1,20 @@
 from __future__ import annotations
 
-from typing import Callable, Optional, Sequence, Union
+from collections.abc import Sequence
+from typing import Optional, Union, Sequence, TypeAlias
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from ml_collections import ConfigDict
 from torch import Tensor
 
 from torch_geometric.nn import GATv2Conv
 
 
-EdgeInput = Union[Tensor, Sequence[Tensor]]
+EdgeInput: TypeAlias = Union[Tensor, Sequence[Tensor]]
+MaskKey: TypeAlias = tuple[int, int, int, torch.device]
+MaskDict: TypeAlias = dict[MaskKey, Tensor]
 
 
 class GLANTConv(nn.Module):
@@ -21,13 +25,13 @@ class GLANTConv(nn.Module):
         in_channels: int,
         out_channels: int,
         heads: int = 1,
-        concat: bool = True,
+        concat: bool = False,
         negative_slope: float = 0.2,
         dropout: float = 0.0,
         add_self_loops: bool = True,
         edge_dim: Optional[int] = None,
         fill_value: Union[float, Tensor, str] = "mean",
-        bias: bool = True,
+        bias: bool = False,
         residual: bool = False,
         max_hops: int = 1,
         **kwargs,
@@ -53,6 +57,7 @@ class GLANTConv(nn.Module):
                     fill_value=fill_value,
                     bias=bias,
                     residual=residual,
+                    share_weights=False,
                     **kwargs,
                 )
             )
@@ -61,6 +66,12 @@ class GLANTConv(nn.Module):
             self.convs[k].lin_l = self.convs[0].lin_l
 
         self.theta = nn.Parameter(torch.zeros(max_hops - 1))
+
+    def reset_parameters(self) -> None:
+        for conv in self.convs:
+            conv.reset_parameters()
+
+        nn.init.zeros_(self.theta)
 
     def forward(
         self,
@@ -88,91 +99,159 @@ class GLANT(nn.Module):
 
     def __init__(
         self,
-        in_channels: int,
-        hidden_channels: int,
-        out_channels: int,
-        num_layers: int = 2,
-        heads: int = 1,
-        alpha: float = 0.0,
-        max_hops: int = 1,
-        conv_cls: Optional[Callable[..., nn.Module]] = None,
-        conv_kwargs: Optional[dict] = None,
-        dropout: float = 0.5,
-        norm: str = "layer",
-        residual: bool = True,
-        feat_norm: bool = True,
-        use_edge_attr: bool = False,
+        model_config: ConfigDict,
+        ds_config: ConfigDict,
+        device: Optional[torch.device] = None,
     ):
         super().__init__()
 
-        if not 0 <= alpha <= 1:
+        # Model parameters
+
+        self.model_config = model_config
+        self.ds_config = ds_config
+        self.device = device
+
+        self.alpha = model_config.alpha
+        self.max_hops = model_config.max_hops
+        self.dropout = model_config.dropout
+
+        self.pre_linear = model_config.pre_linear
+        self.batchnorm = model_config.batchnorm
+        self.layernorm = model_config.layernorm
+        self.residual = model_config.residual
+
+        num_layers = model_config.num_layers
+
+        # Model layers and structures
+
+        self._masks = {}
+        self.pre_lin = torch.nn.Linear(
+            ds_config.in_channels,
+            model_config.hidden_channels
+        )
+        self.convs = nn.ModuleList()
+        self.layernorms = nn.ModuleList()
+        self.batchnorms = nn.ModuleList()
+        self.res_proj = nn.ModuleList()
+
+        if not 0 <= self.alpha <= 1:
             raise ValueError("alpha must be in [0, 1]")
         if num_layers < 1:
             raise ValueError("num_layers must be positive")
-
-        conv_cls = GLANTConv if conv_cls is None else conv_cls
-        conv_kwargs = {} if conv_kwargs is None else dict(conv_kwargs)
-
-        self.alpha = alpha
-        self.max_hops = max_hops
-        self.dropout = dropout
-        self.residual = residual
-        self.feat_norm = feat_norm
-        self.use_glant = conv_cls is GLANTConv
-        self.use_edge_attr = use_edge_attr
-        self.masks = {}
-
-        self.convs = nn.ModuleList()
-        self.norms = nn.ModuleList()
-        self.proj = nn.ModuleList()
-
-        dims = [in_channels] + [hidden_channels] * (num_layers - 1)
-        outs = [hidden_channels] * (num_layers - 1) + [out_channels]
-
-        for i, (din, dout) in enumerate(zip(dims, outs)):
-            last = i == num_layers - 1
-            h = 1 if last else heads
-            cat = False if last else True
-            real_out = dout if not cat else dout * h
-
-            if self.use_glant:
-                conv = GLANTConv(
-                    in_channels=din,
-                    out_channels=dout,
-                    heads=h,
-                    concat=cat,
-                    dropout=dropout,
-                    max_hops=max_hops,
-                    **conv_kwargs,
+        
+        if not self.pre_linear:
+            self.convs.append(
+                GLANTConv(
+                    in_channels=ds_config.in_channels,
+                    out_channels=model_config.hidden_channels,
+                    heads=model_config.heads,
+                    concat=False, # Option True -> change out_channels
+                    dropout=self.dropout,
+                    max_hops=self.max_hops
                 )
-            else:
-                conv = conv_cls(din, real_out, **conv_kwargs)
-
-            self.convs.append(conv)
-
-            if not last:
-                if norm == "batch":
-                    self.norms.append(nn.BatchNorm1d(real_out))
-                elif norm == "layer":
-                    self.norms.append(nn.LayerNorm(real_out))
-                elif norm in {None, "none"}:
-                    self.norms.append(nn.Identity())
-                else:
-                    raise ValueError("norm must be 'batch', 'layer', or 'none'")
-
-            if residual and not last:
-                self.proj.append(
-                    nn.Identity()
-                    if din == real_out
-                    else nn.Linear(din, real_out)
+            )
+            self.res_proj.append(
+                torch.nn.Linear(
+                    ds_config.in_channels,
+                    model_config.hidden_channels
                 )
+            )
+            self.layernorms.append(
+                torch.nn.LayerNorm(
+                    model_config.hidden_channels
+                )
+            )
+            self.batchnorms.append(
+                torch.nn.BatchNorm1d(
+                    model_config.hidden_channels
+                )
+            )
+            num_layers -= 1
+        
+        for _ in range(num_layers):
+            self.convs.append(
+                GLANTConv(
+                    in_channels=model_config.hidden_channels,
+                    out_channels=model_config.hidden_channels,
+                    heads=model_config.heads,
+                    concat=False, # Option True -> change out_channels
+                    dropout=self.dropout,
+                    max_hops=self.max_hops
+                )
+            )
+            self.res_proj.append(
+                torch.nn.Linear(
+                    model_config.hidden_channels,
+                    model_config.hidden_channels
+                )
+            )
+            self.layernorms.append(
+                torch.nn.LayerNorm(
+                    model_config.hidden_channels
+                )
+            )
+            self.batchnorms.append(
+                torch.nn.BatchNorm1d(
+                    model_config.hidden_channels
+                )
+            )
+        
+        self.prediction_layer = torch.nn.Linear(
+            model_config.hidden_channels,
+            ds_config.out_channels
+        )
 
+    def reset_parameters(self) -> None:
+        self._masks.clear()
+
+        for conv in self.convs:
+            conv.reset_parameters()
+        for res_proj in self.res_proj:
+            res_proj.reset_parameters()
+        for ln in self.layernorms:
+            ln.reset_parameters()
+        for bn in self.batchnorms:
+            bn.reset_parameters()
+
+        self.pre_lin.reset_parameters()
+        self.prediction_layer.reset_parameters()
+    
+    @property
+    def masks(self):
+        return self._masks
+    
+    @masks.setter
+    def masks(
+        self,
+        mask: MaskDict
+    ) -> None:
+        self._masks = mask
+
+    def create_masks(
+        self,
+        edge_index: EdgeInput,
+        set_mask: bool = True
+    ) -> MaskDict:
+        masks = {}
+        if torch.is_tensor(edge_index):
+            return masks
+
+        for k, ei in enumerate(edge_index[1:], start=1):
+            p = (1.0 - self.alpha) ** k
+            key = (k, ei.data_ptr(), ei.size(1), ei.device)
+
+            if key not in masks:
+                masks[key] = torch.rand(ei.size(1), device=ei.device) < p
+
+        if set_mask:
+            self._masks = masks
+        return masks
+    
     def drop_edges(
         self,
         edge_index: EdgeInput,
-        resample: bool = False,
     ) -> EdgeInput:
-        if torch.is_tensor(edge_index):
+        if torch.is_tensor(edge_index) or not self._masks:
             return edge_index
 
         out = [edge_index[0]]
@@ -181,7 +260,7 @@ class GLANT(nn.Module):
             p = (1.0 - self.alpha) ** k
             key = (k, ei.data_ptr(), ei.size(1), ei.device)
 
-            if resample or key not in self.masks:
+            if key not in self.masks:
                 self.masks[key] = torch.rand(ei.size(1), device=ei.device) < p
 
             out.append(ei[:, self.masks[key]])
@@ -193,33 +272,25 @@ class GLANT(nn.Module):
         x: Tensor,
         edge_index: EdgeInput,
         edge_attr: Optional[Tensor] = None,
-        resample: bool = False,
     ) -> Tensor:
-        if self.feat_norm:
-            x = F.normalize(x, p=2, dim=-1)
-
-        edges = self.drop_edges(edge_index, resample=resample)
-
-        for i, conv in enumerate(self.convs):
-            h = x
-
-            if self.use_glant:
-                x = conv(x, edges, edge_attr=edge_attr)
-            else:
-                ei = edges[0] if not torch.is_tensor(edges) else edges
-                if self.use_edge_attr:
-                    x = conv(x, ei, edge_attr=edge_attr)
-                else:
-                    x = conv(x, ei)
-
-            if i == len(self.convs) - 1:
-                return x
-
-            x = self.norms[i](x)
-            x = F.relu(x)
+        if self.pre_linear:
+            x = self.pre_lin(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
 
-            if self.residual:
-                x = x + self.proj[i](h)
+        for i, conv in enumerate(self.convs):
 
+            if self.residual:
+                x = conv(x, edge_index, edge_attr) + self.res_proj[i](x)
+            else:
+                x = conv(x, edge_index, edge_attr)
+
+            if self.layernorm:
+                x = self.layernorms[i](x)
+            elif self.batchnorm:
+                x = self.batchnorms[i](x)
+            
+            x = F.relu(x)
+            x = F.dropout(x, p=self.dropout, training=self.training)
+        
+        x = self.prediction_layer(x)
         return x

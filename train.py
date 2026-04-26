@@ -20,7 +20,7 @@ ModelArgs = Dict[str, torch.Tensor]
 MetricCallables = Dict[str, Callable[[nn.Module, Any], float]]
 MetricHistory = Dict[str, Dict[str, List[float]]]
 
-MULTIHOP_MODEL_NAMES = {'GLANT', 'HoGA_GAT', 'MultiHop_GAT'}
+MULTIHOP_MODEL_NAMES = {'GLANT'}
 
 
 def get_args(
@@ -347,12 +347,25 @@ def meta_train(
     device = config.device
     metric_callables = get_metric_functions(ds_config, device)
     meta_metrics: MetricHistory = {model_name: {} for model_name in models}
+    glant_masks = None
 
     for repeat_idx, (model_name, model) in product(
         range(num_repeats),
         models.items(),
     ):
+        data = select_dataset_for_model(model_name, dataset)
         reset_model(model)
+        if model_name in MULTIHOP_MODEL_NAMES:
+            if not glant_masks:
+                print("Creating masks for GLANT")
+                print(f"Length: {len(data.edge_index)}")
+                glant_masks = model.create_masks(
+                    edge_index=data.edge_index,
+                    set_mask=True
+                )
+                data.edge_index = model.drop_edges(data.edge_index)
+
+
         model = model.to(device)
 
         run_dir = (
@@ -362,7 +375,7 @@ def meta_train(
         )
         run_dir.mkdir(parents=True, exist_ok=True)
 
-        data = select_dataset_for_model(model_name, dataset)
+        
         model_config = config.baselines[model_name]
         print(f"Run: {repeat_idx}, Training model {model_name}")
         train_loss, val_loss = train_model(
