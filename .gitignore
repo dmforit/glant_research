@@ -1,6 +1,7 @@
 # Folders
 
-Datasets/
+Datasets/*
+!Datasets/.gitkeep
 model_runs/*
 !model_runs/.gitkeep
 checkpoints/*
