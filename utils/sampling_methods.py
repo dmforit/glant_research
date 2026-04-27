@@ -321,7 +321,7 @@ def balanced_unique_select(
 
     cand = []
     for v in range(num_nodes):
-        ns = list(dict.fromkeys(map(int, hop_neighbours[(hop, v)])))
+        ns = list(dict.fromkeys(map(int, hop_neighbours.get((hop, v), []))))
         ns = [u for u in ns if u != v]
         rng.shuffle(ns)
         cand.append(ns)

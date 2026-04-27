@@ -6,7 +6,7 @@ import torch
 from ml_collections import ConfigDict
 from torch import Tensor
 
-from sampling_methods import (
+from utils.sampling_methods import (
     balanced_unique_select,
     graph_search,
     random_select,

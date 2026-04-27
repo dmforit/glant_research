@@ -3,37 +3,31 @@ import copy
 import json
 import zipfile
 from pathlib import Path
-from xml.sax.saxutils import escape
 from typing import Any, Dict, List, Optional
+from xml.sax.saxutils import escape
 
 import numpy as np
 import torch
 from torch import nn
 
-from new_configs.config import all_config
-
+from configs.config import all_config
 from train import meta_train
-from utils.model_utils import (
-    create_models,
-    load_from_checkpoint
-)
-from utils.data_utils import (
-    fetch_dataset, 
-    ds_cfg
-)
+from utils.data_utils import ds_cfg, fetch_dataset
+from utils.model_utils import create_models, load_from_checkpoint
+
 
 SUPPORTED_GPU_IDS = {0, 1}
-DEFAULT_RESULTS_XLSX = 'model_runs/results.xlsx'
+DEFAULT_RESULTS_XLSX = "model_runs/results.xlsx"
 
 
 def json_list(string: str) -> List[Any]:
     try:
         value = json.loads(string)
     except json.JSONDecodeError as exc:
-        raise argparse.ArgumentTypeError('Input must be a JSON list') from exc
+        raise argparse.ArgumentTypeError("Input must be a JSON list") from exc
 
     if not isinstance(value, list):
-        raise argparse.ArgumentTypeError('Input must be a JSON list')
+        raise argparse.ArgumentTypeError("Input must be a JSON list")
 
     return value
 
@@ -43,16 +37,21 @@ def configure_device(config: Any, gpu: Optional[int]) -> None:
         return
 
     if gpu == -1:
-        config.device = torch.device('cpu')
+        config.device = torch.device("cpu")
         return
 
     if gpu not in SUPPORTED_GPU_IDS:
         raise ValueError(
-            f'Unsupported GPU id: {gpu}. '
-            f'Supported values: -1, {sorted(SUPPORTED_GPU_IDS)}'
+            f"Unsupported GPU id: {gpu}. "
+            f"Supported values: -1, {sorted(SUPPORTED_GPU_IDS)}"
         )
 
-    config.device = torch.device(f'cuda:{gpu}')
+    config.device = torch.device(f"cuda:{gpu}")
+
+
+def selected_model_config(config: Any) -> Any:
+    model_name = config.baselines.names[0]
+    return config.baselines[model_name]
 
 
 def apply_cli_overrides(config: Any, pargs: argparse.Namespace) -> None:
@@ -63,8 +62,8 @@ def apply_cli_overrides(config: Any, pargs: argparse.Namespace) -> None:
         config.baselines.names = [pargs.model]
 
     if pargs.method is not None:
-        print('Starting run with sampling method')
-        config.baselines.names = ['GLANT']
+        print("Starting run with sampling method")
+        config.baselines.names = ["GLANT"]
         config.baselines.GLANT.load_samples = False
         config.baselines.GLANT.sampling_method = pargs.method
 
@@ -72,10 +71,22 @@ def apply_cli_overrides(config: Any, pargs: argparse.Namespace) -> None:
         config.baselines.GLANT.max_hops = pargs.khop
         config.baselines.GLANT.load_samples = False
 
+    if pargs.alpha is not None:
+        config.baselines.GLANT.alpha = pargs.alpha
+
+    if pargs.num_samples is not None:
+        config.baselines.GLANT.num_samples = pargs.num_samples
+        config.baselines.GLANT.load_samples = False
+
+    if pargs.conv_type is not None:
+        config.baselines.GLANT.conv_type = pargs.conv_type
+        if pargs.conv_type != "hop_gated_gatv2":
+            config.baselines.GLANT.max_hops = 1
+
     if pargs.heads is not None:
         for model_name in config.baselines.names:
             model_config = config.baselines.get(model_name)
-            if model_config is not None and hasattr(model_config, 'heads'):
+            if model_config is not None and hasattr(model_config, "heads"):
                 model_config.heads = pargs.heads
 
     configure_device(config, pargs.gpu)
@@ -89,7 +100,7 @@ def execute_run(
     pargs: argparse.Namespace,
 ) -> Any:
     if pargs.train == pargs.test:
-        raise ValueError('Exactly one mode must be selected: --train or --test')
+        raise ValueError("Exactly one mode must be selected: --train or --test")
 
     if pargs.train:
         models = create_models(config, ds_config, data_dict)
@@ -105,7 +116,7 @@ def get_selected_method(config: Any) -> Optional[str]:
     if model_config is None:
         return None
 
-    return getattr(model_config, 'sampling_method', None)
+    return getattr(model_config, "sampling_method", None)
 
 
 def print_metrics(
@@ -116,8 +127,8 @@ def print_metrics(
     method = get_selected_method(config)
     print(all_metrics)
     for model_name, metric_dict in all_metrics.items():
-        acc = metric_dict['Accuracy']
-        print(f'{ds_config.name} result with method {method}')
+        acc = metric_dict["Accuracy"]
+        print(f"{ds_config.name} result with method {method}")
         print(model_name, np.mean(acc), f"+-{np.std(acc)}")
 
 
@@ -128,10 +139,10 @@ def run_experiment(pargs: argparse.Namespace) -> Any:
     ds_config = ds_cfg(config, pargs.dataset)
     print(f"Fetching Dataset: {pargs.dataset}")
     data_dict = fetch_dataset(config, pargs.dataset)
-    print(f"Fetching Dataset - done")
+    print("Fetching Dataset - done")
 
     loss = nn.CrossEntropyLoss()
-    print('\nStarting run\n')
+    print("\nStarting run\n")
     all_metrics = execute_run(config, ds_config, data_dict, loss, pargs)
     print_metrics(config, ds_config, all_metrics)
 
@@ -151,7 +162,7 @@ def run_experiments(pargs: argparse.Namespace) -> Dict[str, Any]:
     for dataset in selected_datasets(pargs):
         dataset_args = copy.copy(pargs)
         dataset_args.dataset = dataset
-        print(f'\nRunning dataset: {dataset}\n')
+        print(f"\nRunning dataset: {dataset}\n")
         results[dataset] = run_experiment(dataset_args)
 
     save_results_xlsx(results, Path(pargs.results_xlsx))
@@ -160,17 +171,17 @@ def run_experiments(pargs: argparse.Namespace) -> Dict[str, Any]:
 
 
 def excel_column(index: int) -> str:
-    column = ''
+    column = ""
 
     while index:
         index, remainder = divmod(index - 1, 26)
-        column = chr(ord('A') + remainder) + column
+        column = chr(ord("A") + remainder) + column
 
     return column
 
 
 def xlsx_cell(row: int, column: int, value: Any) -> str:
-    reference = f'{excel_column(column)}{row}'
+    reference = f"{excel_column(column)}{row}"
 
     if value is None:
         return f'<c r="{reference}"/>'
@@ -181,13 +192,13 @@ def xlsx_cell(row: int, column: int, value: Any) -> str:
     text = escape(str(value))
     return (
         f'<c r="{reference}" t="inlineStr">'
-        f'<is><t>{text}</t></is>'
-        f'</c>'
+        f"<is><t>{text}</t></is>"
+        f"</c>"
     )
 
 
 def mean_accuracy(metric_dict: Dict[str, List[float]]) -> Optional[float]:
-    accuracy = metric_dict.get('Accuracy', [])
+    accuracy = metric_dict.get("Accuracy", [])
     if not accuracy:
         return None
 
@@ -201,7 +212,7 @@ def results_table(results: Dict[str, Any]) -> List[List[Any]]:
             if model_name not in model_names:
                 model_names.append(model_name)
 
-    header = ['Model', *results.keys()]
+    header = ["Model", *results.keys()]
     rows = [header]
 
     for model_name in model_names:
@@ -219,7 +230,7 @@ def write_xlsx(rows: List[List[Any]], path: Path) -> None:
 
     sheet_rows = []
     for row_idx, row in enumerate(rows, start=1):
-        cells = ''.join(
+        cells = "".join(
             xlsx_cell(row_idx, col_idx, value)
             for col_idx, value in enumerate(row, start=1)
         )
@@ -229,15 +240,15 @@ def write_xlsx(rows: List[List[Any]], path: Path) -> None:
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<worksheet xmlns="http://schemas.openxmlformats.org/'
         'spreadsheetml/2006/main">'
-        '<sheetData>'
+        "<sheetData>"
         f'{"".join(sheet_rows)}'
-        '</sheetData>'
-        '</worksheet>'
+        "</sheetData>"
+        "</worksheet>"
     )
 
-    with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as workbook:
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as workbook:
         workbook.writestr(
-            '[Content_Types].xml',
+            "[Content_Types].xml",
             '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
             '<Types xmlns="http://schemas.openxmlformats.org/'
             'package/2006/content-types">'
@@ -249,38 +260,38 @@ def write_xlsx(rows: List[List[Any]], path: Path) -> None:
             '<Override PartName="/xl/worksheets/sheet1.xml" ContentType='
             '"application/vnd.openxmlformats-officedocument.spreadsheetml.'
             'worksheet+xml"/>'
-            '</Types>',
+            "</Types>",
         )
         workbook.writestr(
-            '_rels/.rels',
+            "_rels/.rels",
             '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
             '<Relationships xmlns="http://schemas.openxmlformats.org/'
             'package/2006/relationships">'
             '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/'
             'officeDocument/2006/relationships/officeDocument" '
             'Target="xl/workbook.xml"/>'
-            '</Relationships>',
+            "</Relationships>",
         )
         workbook.writestr(
-            'xl/workbook.xml',
+            "xl/workbook.xml",
             '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
             '<workbook xmlns="http://schemas.openxmlformats.org/'
             'spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.'
             'org/officeDocument/2006/relationships">'
             '<sheets><sheet name="Results" sheetId="1" r:id="rId1"/>'
-            '</sheets></workbook>',
+            "</sheets></workbook>",
         )
         workbook.writestr(
-            'xl/_rels/workbook.xml.rels',
+            "xl/_rels/workbook.xml.rels",
             '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
             '<Relationships xmlns="http://schemas.openxmlformats.org/'
             'package/2006/relationships">'
             '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/'
             'officeDocument/2006/relationships/worksheet" '
             'Target="worksheets/sheet1.xml"/>'
-            '</Relationships>',
+            "</Relationships>",
         )
-        workbook.writestr('xl/worksheets/sheet1.xml', sheet_xml)
+        workbook.writestr("xl/worksheets/sheet1.xml", sheet_xml)
 
 
 def save_results_xlsx(results: Dict[str, Any], path: Path) -> None:
@@ -288,83 +299,104 @@ def save_results_xlsx(results: Dict[str, Any], path: Path) -> None:
         return
 
     write_xlsx(results_table(results), path)
-    print(f'\nSaved summary results to {path}\n')
+    print(f"\nSaved summary results to {path}\n")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+
     dataset_group = parser.add_mutually_exclusive_group(required=True)
     dataset_group.add_argument(
-        '--dataset',
+        "--dataset",
         type=str,
-        help='The name of the dataset to run',
+        help="The name of the dataset to run",
     )
     dataset_group.add_argument(
-        '--datasets',
+        "--datasets",
         type=str,
-        nargs='+',
+        nargs="+",
         default=None,
-        help='Dataset names to run sequentially',
+        help="Dataset names to run sequentially",
     )
+
     parser.add_argument(
-        '--gpu',
+        "--gpu",
         type=int,
         default=None,
-        help='Override GPU from the config file; use -1 for CPU',
+        help="Override GPU from the config file; use -1 for CPU",
     )
     parser.add_argument(
-        '--khop',
+        "--khop",
         type=int,
         default=None,
-        help='Override GLANT max-hops value',
+        help="Override GLANT max-hops value",
     )
     parser.add_argument(
-        '--heads',
+        "--alpha",
+        type=float,
+        default=None,
+        help="Override GLANT higher-hop sparsification alpha",
+    )
+    parser.add_argument(
+        "--num-samples",
         type=int,
         default=None,
-        help='Override GLANT attention heads',
+        help="Override number of sampled edges per node/hop",
     )
     parser.add_argument(
-        '--checkpoint',
+        "--conv-type",
         type=str,
-        default='checkpoints',
-        help='Checkpoint directory for loading models',
+        default=None,
+        choices=["hop_gated_gatv2", "gatv2", "gat", "sage", "gcn"],
+        help="Override GLANT wrapper conv_type",
     )
     parser.add_argument(
-        '--load',
+        "--heads",
+        type=int,
+        default=None,
+        help="Override attention heads",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default="checkpoints",
+        help="Checkpoint directory for loading models",
+    )
+    parser.add_argument(
+        "--load",
         type=json_list,
-        nargs='+',
+        nargs="+",
         default=None,
-        help='Load models from a JSON list',
+        help="Load models from a JSON list",
     )
     parser.add_argument(
-        '--method',
+        "--method",
         type=str,
         default=None,
-        help='Sampling method ablation',
+        help="Sampling method ablation",
     )
     parser.add_argument(
-        '--model',
+        "--model",
         type=str,
         default=None,
-        help='Override model from the config file',
+        help="Override model from the config file",
     )
     parser.add_argument(
-        '--runs',
+        "--runs",
         type=int,
         default=None,
-        help='Override number of experiment repeats',
+        help="Override number of experiment repeats",
     )
     parser.add_argument(
-        '--results-xlsx',
+        "--results-xlsx",
         type=str,
         default=DEFAULT_RESULTS_XLSX,
-        help='Path for the summary XLSX file',
+        help="Path for the summary XLSX file",
     )
 
     mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument('--train', action='store_true', help='Train the model')
-    mode.add_argument('--test', action='store_true', help='Test the model')
+    mode.add_argument("--train", action="store_true", help="Train the model")
+    mode.add_argument("--test", action="store_true", help="Test the model")
 
     args = parser.parse_args()
     run_experiments(args)

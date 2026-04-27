@@ -11,7 +11,7 @@ from ml_collections import ConfigDict
 from torch import Tensor
 from torch_geometric.transforms import Compose, NormalizeFeatures
 
-from adj_khop_logic import get_K_adjs
+from sampling import get_K_adjs
 
 
 Dataset: TypeAlias = Any
@@ -24,7 +24,7 @@ FetchResult: TypeAlias = ConfigDict | list[Any]
 
 SPLITS = ("train", "val", "test")
 WEBKB = frozenset({"Texas", "Wisconsin"})
-MULTIHOP = frozenset({"GLANT"})
+HOP_AWARE_CONVS = frozenset({"hop_gated_gatv2"})
 
 DS_CFG = {
     "Cora": "cora",
@@ -167,15 +167,37 @@ def pack(ds: Dataset, cfg: ConfigDict) -> ConfigDict:
     )
 
 
+def needs_multihop(model: ConfigDict) -> bool:
+    """Return True if model config requires a list of hop edge_index tensors."""
+    return str(getattr(model, "conv_type", "")).lower() in HOP_AWARE_CONVS
+
+
 def mh_cfg(config: ConfigDict) -> Optional[ConfigDict]:
-    names = set(config.baselines.names)
-    if names.isdisjoint(MULTIHOP):
-        return None
-    return getattr(config.baselines, "GLANT", None)
+    """
+    Return the first selected model config that requires multihop edges.
+
+    Current pipeline supports one shared multihop edge list per experiment.
+    """
+    for model_name in config.baselines.names:
+        if model_name not in config.baselines:
+            continue
+
+        model = config.baselines[model_name]
+        if needs_multihop(model):
+            return model
+
+    return None
 
 
 def edge_dir(cfg: ConfigDict, model: ConfigDict) -> Path:
-    return Path(cfg.save_path) / model.sampling_method / "shared"
+    """Directory for cached sampled higher-hop edge sets."""
+    num_samples = getattr(model, "num_samples", "default")
+    name = (
+        f"{model.sampling_method}"
+        f"_K{model.max_hops}"
+        f"_S{num_samples}"
+    )
+    return Path(cfg.save_path) / cfg.name / name / "shared"
 
 
 def load_edges(ds: Dataset, model: ConfigDict, path: Path, device: torch.device) -> Edges:
@@ -272,12 +294,11 @@ def fetch_dataset(
 
     if ds_name not in WEBKB:
         sync_masks(ds)
-    select_mask_split(ds, getattr(cfg, "split_idx", 0))
 
+    select_mask_split(ds, getattr(cfg, "split_idx", 0))
     save_masks(ds[0], paths)
 
     data = pack(ds, cfg)
-
     maybe_add_mh(data, config, cfg)
 
     return unpack(data) if unpack_ else data

@@ -1,7 +1,7 @@
 import torch
 from ml_collections import ConfigDict
 
-from new_configs.data_config import (
+from configs.data_config import (
     citeseer_config,
     computers_config,
     cora_config,
@@ -10,7 +10,7 @@ from new_configs.data_config import (
     texas_config,
     wisconsin_config,
 )
-from new_configs.model_config import (
+from configs.model_config import (
     gat_config,
     gatv2_config,
     gcn_config,
