@@ -19,6 +19,7 @@ from torch.optim.lr_scheduler import (
 )
 
 from model import HopEdgeSparsifier
+from utils.logger import logger
 from utils.model_utils import save_to_checkpoint
 
 
@@ -41,6 +42,57 @@ def select_mask_column(mask: torch.Tensor, split_idx: int = 0) -> torch.Tensor:
 def is_hop_aware_config(model_config: ConfigDict) -> bool:
     """Return True if model expects a list of hop edge_index tensors."""
     return str(getattr(model_config, "conv_type", "")).lower() in HOP_AWARE_CONVS
+
+
+def edge_counts(edge_index: Any) -> List[int]:
+    """Return edge counts for a Tensor edge_index or list of hop edge_index tensors."""
+    if torch.is_tensor(edge_index):
+        return [int(edge_index.size(1))]
+
+    return [int(edge.size(1)) for edge in edge_index]
+
+
+def log_sparsification_progress(
+    before: List[int],
+    after: List[int],
+    alpha: float,
+    enabled: bool,
+) -> None:
+    """Log higher-hop sparsification progress and edge counts."""
+    if len(before) <= 1:
+        logger.info("Edge sparsification skipped: no higher-hop edge sets")
+        return
+
+    total_steps = len(before) - 1
+    logger.info(
+        "Edge sparsification started: alpha=%s enabled=%s, 0/%s higher-hop sets complete",
+        alpha,
+        enabled,
+        total_steps,
+    )
+
+    for step, hop_idx in enumerate(range(1, len(before)), start=1):
+        before_count = before[hop_idx]
+        after_count = after[hop_idx]
+        kept_ratio = 0.0 if before_count == 0 else after_count / before_count
+        logger.info(
+            (
+                "Edge sparsification progress: %s/%s complete for hop E_%s "
+                "(kept %s/%s, %.2f%%)"
+            ),
+            step,
+            total_steps,
+            hop_idx + 1,
+            after_count,
+            before_count,
+            kept_ratio * 100,
+        )
+
+    logger.info(
+        "Edge sparsification done: kept %s/%s higher-hop edges",
+        sum(after[1:]),
+        sum(before[1:]),
+    )
 
 
 def select_dataset_for_model(
@@ -76,14 +128,23 @@ def sparsify_dataset_edges(data: Any, model_config: ConfigDict) -> Any:
     if torch.is_tensor(edge_index):
         return data
 
+    before_counts = edge_counts(edge_index)
+    alpha = float(getattr(model_config, "alpha", 1.0))
+    enabled = bool(getattr(model_config, "sparsify_hops", True))
     sparsifier = HopEdgeSparsifier(
-        alpha=float(getattr(model_config, "alpha", 1.0)),
+        alpha=alpha,
         cache_masks=bool(getattr(model_config, "sparsifier_cache_masks", True)),
-        enabled=bool(getattr(model_config, "sparsify_hops", True)),
+        enabled=enabled,
     )
 
     out = copy(data)
     out.edge_index = sparsifier(edge_index)
+    log_sparsification_progress(
+        before=before_counts,
+        after=edge_counts(out.edge_index),
+        alpha=alpha,
+        enabled=enabled,
+    )
 
     return out
 
@@ -316,23 +377,20 @@ def print_epoch_summary(
     best_test_acc: float,
 ) -> None:
     """Print compact training progress."""
-    print(
-        "Epoch:",
+    logger.info(
+        (
+            "Epoch: %s Train Loss %.4f Val Loss %.4f "
+            "Train Acc: %.4f Val Acc: %.4f Test Acc: %.4f "
+            "Best Val Acc: %.4f Best Test Acc: %.4f"
+        ),
         epoch,
-        "Train Loss",
-        round(train_loss, 4),
-        "Val Loss",
-        round(val_loss, 4),
-        "Train Acc:",
-        round(train_acc, 4),
-        "Val Acc:",
-        round(val_acc, 4),
-        "Test Acc:",
-        round(test_acc, 4),
-        "Best Val Acc:",
-        round(best_val_acc, 4),
-        "Best Test Acc:",
-        round(best_test_acc, 4),
+        train_loss,
+        val_loss,
+        train_acc,
+        val_acc,
+        test_acc,
+        best_val_acc,
+        best_test_acc,
     )
 
 
@@ -490,7 +548,7 @@ def meta_train(
         )
         run_dir.mkdir(parents=True, exist_ok=True)
 
-        print(f"Run: {repeat_idx}, Training model {model_name}")
+        logger.info("Run: %s, Training model %s", repeat_idx, model_name)
         train_loss, val_loss = train_model(
             model_config,
             model,
@@ -499,15 +557,15 @@ def meta_train(
             run_dir,
             device,
         )
-        print(f"Run: {repeat_idx}, Training completed")
+        logger.info("Run: %s, Training completed", repeat_idx)
 
-        print("Loading for evaluation")
+        logger.info("Loading for evaluation")
         model = load_model_checkpoint(run_dir / "model.pt", device)
 
-        print("Collecting all metrics")
+        logger.info("Collecting all metrics")
         metrics = collect_metrics(model, data, metric_callables)
 
-        print("Saving metrics")
+        logger.info("Saving metrics")
         save_loss_curves(train_loss, val_loss, run_dir / "loss_curves.pdf")
         save_metrics(metrics, run_dir / "metrics.txt")
         save_config(config, run_dir / "config.yml")

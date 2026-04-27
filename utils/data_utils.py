@@ -12,6 +12,7 @@ from torch import Tensor
 from torch_geometric.transforms import Compose, NormalizeFeatures
 
 from sampling import get_K_adjs
+from utils.logger import logger
 
 
 Dataset: TypeAlias = Any
@@ -201,11 +202,23 @@ def edge_dir(cfg: ConfigDict, model: ConfigDict) -> Path:
 
 
 def load_edges(ds: Dataset, model: ConfigDict, path: Path, device: torch.device) -> Edges:
+    logger.info("Loading sampled hop edges from %s", path)
     edges = [ds.edge_index.to(device=device, dtype=torch.int64)]
 
     for hop in range(1, model.max_hops):
+        logger.info(
+            "Loading sampled hop edges progress: %s/%s started",
+            hop,
+            model.max_hops - 1,
+        )
         edge = torch.load(path / str(hop)).to(device=device, dtype=torch.int64)
         edges.append(edge)
+        logger.info(
+            "Loading sampled hop edges progress: %s/%s complete (%s edges)",
+            hop,
+            model.max_hops - 1,
+            edge.shape[1],
+        )
 
     return edges
 
@@ -216,6 +229,12 @@ def make_edges(
     cfg: ConfigDict,
     device: torch.device,
 ) -> Edges:
+    logger.info(
+        "Generating sampled hop edges: method=%s max_hops=%s num_samples=%s",
+        model.sampling_method,
+        model.max_hops,
+        getattr(model, "num_samples", "default"),
+    )
     edges = get_K_adjs(
         ds.edge_index,
         model,
@@ -232,10 +251,10 @@ def save_edges(edges: Edges, path: Path) -> None:
 
 
 def show_edges(edges: Edges) -> None:
-    print("\nEdges for each hop\n")
+    logger.info("Edges for each hop")
     for hop, edge in enumerate(edges, start=1):
-        print(f"{hop} hop: {edge.shape[1]}")
-    print("\nEdges for each hop ended")
+        logger.info("%s hop: %s", hop, edge.shape[1])
+    logger.info("Edges for each hop ended")
 
 
 def edges(
@@ -246,11 +265,13 @@ def edges(
 ) -> Edges:
     path = edge_dir(cfg, model)
     path.mkdir(parents=True, exist_ok=True)
+    logger.info("Shared sampled hop edge cache: %s", path)
 
     if model.load_samples:
         out = load_edges(ds, model, path, device)
     else:
         out = make_edges(ds, model, cfg, device)
+        logger.info("Saving sampled hop edges to %s", path)
         save_edges(out, path)
 
     show_edges(out)
@@ -268,11 +289,11 @@ def maybe_add_mh(data: ConfigDict, config: ConfigDict, cfg: ConfigDict) -> None:
     if model is None:
         return
 
-    print(f"\nMultihop config:\n{model}")
+    logger.info("Multihop config:\n%s", model)
 
-    print("\nBuilding multihop edges...\n")
+    logger.info("Building multihop edges...")
     add_mh(data, model, cfg, config.device)
-    print("\nBuilding multihop edges - done.")
+    logger.info("Building multihop edges - done.")
 
 
 def unpack(data: ConfigDict) -> list[Any]:
@@ -288,9 +309,9 @@ def fetch_dataset(
     paths = mask_paths(root)
     cfg = ds_cfg(config, ds_name)
 
-    print("Dataset loading...")
+    logger.info("Dataset loading...")
     ds = load_ds(ds_name, root, transform(paths), config.device)
-    print("Dataset has been loaded successfully.")
+    logger.info("Dataset has been loaded successfully.")
 
     if ds_name not in WEBKB:
         sync_masks(ds)

@@ -13,6 +13,7 @@ from torch import nn
 from configs.config import all_config
 from train import meta_train
 from utils.data_utils import ds_cfg, fetch_dataset
+from utils.logger import log_selected_configs, logger
 from utils.model_utils import create_models, load_from_checkpoint
 
 
@@ -62,7 +63,7 @@ def apply_cli_overrides(config: Any, pargs: argparse.Namespace) -> None:
         config.baselines.names = [pargs.model]
 
     if pargs.method is not None:
-        print("Starting run with sampling method")
+        logger.info("Starting run with sampling method")
         config.baselines.names = ["GLANT"]
         config.baselines.GLANT.load_samples = False
         config.baselines.GLANT.sampling_method = pargs.method
@@ -125,11 +126,11 @@ def print_metrics(
     all_metrics: Dict[str, Dict[str, List[float]]],
 ) -> None:
     method = get_selected_method(config)
-    print(all_metrics)
+    logger.info("%s", all_metrics)
     for model_name, metric_dict in all_metrics.items():
         acc = metric_dict["Accuracy"]
-        print(f"{ds_config.name} result with method {method}")
-        print(model_name, np.mean(acc), f"+-{np.std(acc)}")
+        logger.info("%s result with method %s", ds_config.name, method)
+        logger.info("%s %s +-%s", model_name, np.mean(acc), np.std(acc))
 
 
 def run_experiment(pargs: argparse.Namespace) -> Any:
@@ -137,12 +138,13 @@ def run_experiment(pargs: argparse.Namespace) -> Any:
     apply_cli_overrides(config, pargs)
 
     ds_config = ds_cfg(config, pargs.dataset)
-    print(f"Fetching Dataset: {pargs.dataset}")
+    log_selected_configs(config, ds_config)
+    logger.info("Fetching Dataset: %s", pargs.dataset)
     data_dict = fetch_dataset(config, pargs.dataset)
-    print("Fetching Dataset - done")
+    logger.info("Fetching Dataset - done")
 
     loss = nn.CrossEntropyLoss()
-    print("\nStarting run\n")
+    logger.info("Starting run")
     all_metrics = execute_run(config, ds_config, data_dict, loss, pargs)
     print_metrics(config, ds_config, all_metrics)
 
@@ -162,7 +164,7 @@ def run_experiments(pargs: argparse.Namespace) -> Dict[str, Any]:
     for dataset in selected_datasets(pargs):
         dataset_args = copy.copy(pargs)
         dataset_args.dataset = dataset
-        print(f"\nRunning dataset: {dataset}\n")
+        logger.info("Running dataset: %s", dataset)
         results[dataset] = run_experiment(dataset_args)
 
     save_results_xlsx(results, Path(pargs.results_xlsx))
@@ -299,7 +301,7 @@ def save_results_xlsx(results: Dict[str, Any], path: Path) -> None:
         return
 
     write_xlsx(results_table(results), path)
-    print(f"\nSaved summary results to {path}\n")
+    logger.info("Saved summary results to %s", path)
 
 
 if __name__ == "__main__":

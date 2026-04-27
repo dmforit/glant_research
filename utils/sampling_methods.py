@@ -15,6 +15,23 @@ from utils.khop_utils import (
     add_bidirectional_edge,
     node_to_int,
 )
+from utils.logger import logger
+
+
+def next_progress_step(total: int) -> int:
+    """Return an edge-count step for roughly 10 progress updates."""
+    return max(1, total // 10)
+
+
+def log_sampling_edges(method: str, hop: int, sampled: int, total: int) -> None:
+    """Log edge sampling progress for a single method and hop."""
+    logger.info(
+        "Sampling %s progress for distance %s hop: %s/%s edges",
+        method,
+        hop,
+        min(sampled, total),
+        total,
+    )
 
 
 def random_walk(
@@ -28,6 +45,8 @@ def random_walk(
     """Sample edges by repeatedly walking through k-hop neighbours."""
     total_visited = 0
     max_samples = edge_index.shape[-1]
+    progress_step = next_progress_step(max_samples)
+    next_progress = progress_step
     restart = True
 
     for _ in range(2 * max_samples):
@@ -51,6 +70,9 @@ def random_walk(
 
         source_node = target_node
         total_visited += 2
+        if total_visited >= next_progress:
+            log_sampling_edges('random_walk', hop, total_visited, max_samples)
+            next_progress += progress_step
 
         if total_visited >= max_samples:
             break
@@ -68,6 +90,8 @@ def random_select(
 ) -> Tensor:
     """Sample random source nodes and one random k-hop neighbour for each."""
     total_samples = 0
+    progress_step = next_progress_step(num_samples)
+    next_progress = progress_step
 
     while total_samples < num_samples:
         source_node = np.random.randint(0, num_nodes)
@@ -84,6 +108,9 @@ def random_select(
             device,
         )
         total_samples += 2
+        if total_samples >= next_progress:
+            log_sampling_edges('random', hop, total_samples, num_samples)
+            next_progress += progress_step
 
     return edge_index
 
@@ -167,6 +194,8 @@ def sim_walk(
     max_iters = 2 * num_samples
 
     total_visited = 0
+    progress_step = next_progress_step(num_samples)
+    next_progress = progress_step
     previous_node: Node = -1
     source_node: Node = -1
     weighted_sum: Optional[Tensor] = None
@@ -176,7 +205,7 @@ def sim_walk(
 
     for iter_idx in range(max_iters):
         if iter_idx % 1000 == 0:
-            print(f'{iter_idx}/{max_iters}', walk.shape)
+            logger.info('sim_walk iterations for distance %s hop: %s/%s', hop, iter_idx, max_iters)
 
         if restart:
             source_node = torch.randint(
@@ -227,6 +256,9 @@ def sim_walk(
             device,
         )
         total_visited += 2
+        if total_visited >= next_progress:
+            log_sampling_edges('sim_walk', hop, total_visited, num_samples)
+            next_progress += progress_step
         if total_visited >= num_samples:
             break
 
@@ -261,6 +293,8 @@ def graph_search(
 
     previous_node = None
     total_visited = 0
+    progress_step = next_progress_step(num_samples)
+    next_progress = progress_step
 
     for _ in range(2 * num_samples):
         if method == 'bfs':
@@ -277,6 +311,9 @@ def graph_search(
                 device,
             )
             total_visited += 2
+            if total_visited >= next_progress:
+                log_sampling_edges(method, hop, total_visited, num_samples)
+                next_progress += progress_step
         previous_node = source_node
 
         for target_node in hop_neighbours[(hop, source_node)]:
@@ -318,6 +355,8 @@ def balanced_unique_select(
             dtype=edge_index.dtype,
         )
     rng = np.random.default_rng()
+    progress_step = next_progress_step(max_samples)
+    next_progress = progress_step
 
     cand = []
     for v in range(num_nodes):
@@ -333,7 +372,7 @@ def balanced_unique_select(
     total = 0
 
     def add_one(v: int) -> bool:
-        nonlocal total
+        nonlocal next_progress, total
 
         while cand[v]:
             u = cand[v].pop()
@@ -346,6 +385,14 @@ def balanced_unique_select(
             edge_index[0, total] = v
             edge_index[1, total] = u
             total += 1
+            if total >= next_progress:
+                log_sampling_edges(
+                    'balanced_unique_select',
+                    hop,
+                    total,
+                    max_samples,
+                )
+                next_progress += progress_step
             return True
 
         return False

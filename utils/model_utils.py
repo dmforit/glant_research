@@ -9,6 +9,7 @@ import torch.nn as nn
 from ml_collections import ConfigDict
 
 from model import GLANT
+from utils.logger import logger
 
 
 Metrics = Dict[str, Dict[str, List[float]]]
@@ -37,7 +38,7 @@ def load_from_checkpoint(
         )
 
         if not metrics_path.exists():
-            print(f"Metric file path {metrics_path} not found")
+            logger.warning("Metric file path %s not found", metrics_path)
             continue
 
         with metrics_path.open("r", encoding="utf-8") as reader:
@@ -108,7 +109,7 @@ def create_model(
     """Create one model by name."""
     del data_dict
 
-    print(f"Ds config ({model_name})\n: {ds_config}")
+    logger.info("Ds config (%s):\n%s", model_name, ds_config)
     return create_wrapped_model(model_name, config, ds_config)
 
 

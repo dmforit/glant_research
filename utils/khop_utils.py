@@ -8,6 +8,8 @@ import numpy as np
 import torch
 from torch import Tensor
 
+from utils.logger import logger
+
 
 RANDOM_METHOD = 'random'
 RANDOM_WALK_METHOD = 'random_walk'
@@ -142,7 +144,7 @@ def add_bidirectional_edge(
     if column < edge_index.shape[-1] - 1:
         edge_index[:, column + 1] = backward_edge
     else:
-        print('Only forward tensor assignment due to index out of bounds')
+        logger.warning('Only forward tensor assignment due to index out of bounds')
 
 
 def add_tensor(

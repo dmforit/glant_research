@@ -74,7 +74,7 @@ def glant_config() -> ConfigDict:
     config.concat = False
 
     config.max_hops = 3
-    config.alpha = 0.85
+    config.alpha = 0.1
 
     config.dropout = 0.7
     config.attn_dropout = 0.7

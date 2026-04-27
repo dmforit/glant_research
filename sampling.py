@@ -28,6 +28,7 @@ from utils.khop_utils import (
     get_shortest_paths,
     prepare_path_data,
 )
+from utils.logger import logger
 
 
 SamplingHandler = Callable[['SamplingContext'], Tensor]
@@ -211,7 +212,7 @@ def get_K_adjs(
 
     get_sampling_handler(method)
 
-    print('creating networkx graph')
+    logger.info('creating networkx graph')
     graph = create_networkx_graph(adj_list)
     adj_lists = create_empty_adjacencies(
         adj_list,
@@ -220,7 +221,7 @@ def get_K_adjs(
         device,
     )
 
-    print('finding shortest paths')
+    logger.info('finding shortest paths')
     shortest_paths = get_shortest_paths(graph, num_hops)
     shortest_path_lengths, extra_data = prepare_path_data(
         shortest_paths,
@@ -229,13 +230,19 @@ def get_K_adjs(
         num_nodes,
     )
 
-    print('shortest paths complete')
+    logger.info('shortest paths complete')
     hop_neighbours = extra_data['k_hop_neighbours']
 
-    print('samapling started...')
+    extra_hops = max(num_hops - 1, 0)
+    logger.info('sampling started: 0/%s hop distances complete', extra_hops)
     for hop_index in range(1, num_hops):
-        print(f'sampling for {hop_index} hop')
         hop_distance = hop_index + 1
+        logger.info(
+            'sampling progress: %s/%s started for distance %s hop',
+            hop_index,
+            extra_hops,
+            hop_distance,
+        )
         adj_lists[hop_index] = sample_hop_adjacency(
             adj_lists[hop_index],
             hop_neighbours,
@@ -248,6 +255,13 @@ def get_K_adjs(
             method,
             device,
         )
-    print('sampling done')
+        logger.info(
+            'sampling progress: %s/%s complete for distance %s hop (%s edges)',
+            hop_index,
+            extra_hops,
+            hop_distance,
+            adj_lists[hop_index].shape[1],
+        )
+    logger.info('sampling done: %s/%s hop distances complete', extra_hops, extra_hops)
 
     return adj_lists
