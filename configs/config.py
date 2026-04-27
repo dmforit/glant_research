@@ -2,6 +2,7 @@ import torch
 from ml_collections import ConfigDict
 
 from configs.data_config import (
+    actor_config,
     citeseer_config,
     computers_config,
     cora_config,
@@ -27,6 +28,7 @@ def all_config() -> ConfigDict:
     config.citeseer = citeseer_config()
     config.computers = computers_config()
     config.photo = photo_config()
+    config.actor = actor_config()
     config.wisconsin = wisconsin_config()
     config.texas = texas_config()
 

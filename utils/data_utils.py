@@ -55,12 +55,111 @@ def sync_masks(ds: Dataset) -> None:
         setattr(ds, mask_name(split), getattr(graph, mask_name(split)))
 
 
+def stored_graph(ds: Dataset) -> Optional[Graph]:
+    """Return the underlying PyG in-memory graph object when available."""
+    return getattr(ds, "_data", None)
+
+
+def set_mask(ds: Dataset, graph: Graph, split: str, mask: Tensor) -> None:
+    """Set one split mask on all graph holders used by PyG datasets."""
+    name = mask_name(split)
+    setattr(graph, name, mask)
+    base_graph = stored_graph(ds)
+    if base_graph is not None:
+        setattr(base_graph, name, mask)
+    setattr(ds, name, mask)
+
+
+def has_masks(graph: Graph) -> bool:
+    """Return True if graph has all required split masks."""
+    return all(hasattr(graph, mask_name(split)) for split in SPLITS)
+
+
+def apply_masks(ds: Dataset, masks: Masks) -> None:
+    """Attach split masks to both the graph and dataset objects."""
+    graph = ds[0]
+    for split, mask in masks.items():
+        mask = mask.to(graph.y.device)
+        set_mask(ds, graph, split, mask)
+
+
+def random_masks(
+    num_nodes: int,
+    train_ratio: float = 0.6,
+    val_ratio: float = 0.2,
+    seed: int = 0,
+) -> Masks:
+    """Create reproducible train/validation/test masks for datasets without splits."""
+    if num_nodes < 3:
+        raise ValueError("At least 3 nodes are required to create train/val/test masks")
+    if not 0.0 < train_ratio < 1.0:
+        raise ValueError("train_ratio must be in (0, 1)")
+    if not 0.0 <= val_ratio < 1.0:
+        raise ValueError("val_ratio must be in [0, 1)")
+    if train_ratio + val_ratio >= 1.0:
+        raise ValueError("train_ratio + val_ratio must be less than 1")
+
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    perm = torch.randperm(num_nodes, generator=generator)
+
+    train_count = max(1, int(num_nodes * train_ratio))
+    val_count = max(1, int(num_nodes * val_ratio))
+    if train_count + val_count >= num_nodes:
+        val_count = max(1, num_nodes - train_count - 1)
+
+    train_idx = perm[:train_count]
+    val_idx = perm[train_count:train_count + val_count]
+    test_idx = perm[train_count + val_count:]
+
+    masks = {
+        split: torch.zeros(num_nodes, dtype=torch.bool)
+        for split in SPLITS
+    }
+    masks["train"][train_idx] = True
+    masks["val"][val_idx] = True
+    masks["test"][test_idx] = True
+
+    return masks
+
+
+def ensure_masks(ds: Dataset, paths: Paths, cfg: ConfigDict) -> None:
+    """Ensure graph has train/validation/test masks, creating cached ones if needed."""
+    graph = ds[0]
+
+    if has_masks(graph):
+        sync_masks(ds)
+        logger.info("Using masks provided by dataset")
+        return
+
+    cached_masks = load_masks(paths)
+    if cached_masks is not None:
+        apply_masks(ds, cached_masks)
+        logger.info("Using cached masks from %s", paths["train"].parent)
+        return
+
+    logger.info("Dataset has no masks; creating reproducible random split")
+    masks = random_masks(
+        num_nodes=graph.num_nodes,
+        train_ratio=float(getattr(cfg, "train_ratio", 0.6)),
+        val_ratio=float(getattr(cfg, "val_ratio", 0.2)),
+        seed=int(getattr(cfg, "split_seed", 0)),
+    )
+    apply_masks(ds, masks)
+    save_masks(ds[0], paths)
+    logger.info(
+        "Created masks: train=%s val=%s test=%s",
+        int(masks["train"].sum()),
+        int(masks["val"].sum()),
+        int(masks["test"].sum()),
+    )
+
+
 def pick_webkb_split(ds: Dataset, idx: int = 0) -> None:
     graph = ds[0]
     for split in SPLITS:
         mask = getattr(graph, mask_name(split))[:, idx]
-        setattr(graph, mask_name(split), mask)
-        setattr(ds, mask_name(split), mask)
+        set_mask(ds, graph, split, mask)
 
 
 def select_mask_split(ds: Dataset, idx: int = 0) -> None:
@@ -71,8 +170,7 @@ def select_mask_split(ds: Dataset, idx: int = 0) -> None:
         mask = getattr(graph, name)
         if mask.dim() > 1:
             mask = mask[:, idx]
-        setattr(graph, name, mask)
-        setattr(ds, name, mask)
+        set_mask(ds, graph, split, mask)
 
 
 def mask_paths(root: Path) -> Paths:
@@ -313,9 +411,7 @@ def fetch_dataset(
     ds = load_ds(ds_name, root, transform(paths), config.device)
     logger.info("Dataset has been loaded successfully.")
 
-    if ds_name not in WEBKB:
-        sync_masks(ds)
-
+    ensure_masks(ds, paths, cfg)
     select_mask_split(ds, getattr(cfg, "split_idx", 0))
     save_masks(ds[0], paths)
 

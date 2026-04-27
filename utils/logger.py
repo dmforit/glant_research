@@ -59,6 +59,9 @@ def log_dataset_config(ds_config: object) -> None:
             ("out_channels", _value(ds_config, "out_channels")),
             ("metrics", _value(ds_config, "metrics")),
             ("split_idx", _value(ds_config, "split_idx")),
+            ("auto_train_ratio", _value(ds_config, "train_ratio", 0.6)),
+            ("auto_val_ratio", _value(ds_config, "val_ratio", 0.2)),
+            ("auto_split_seed", _value(ds_config, "split_seed", 0)),
             ("save_path", _value(ds_config, "save_path")),
         ],
     )

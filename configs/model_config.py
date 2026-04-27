@@ -2,7 +2,7 @@ from ml_collections import ConfigDict
 
 
 def training_config(
-    lr: float = 0.005,
+    lr: float = 0.05,
     weight_decay: float = 5e-4,
     num_epochs: int = 300,
     scheduler_name: str = "none",
@@ -74,7 +74,7 @@ def glant_config() -> ConfigDict:
     config.concat = False
 
     config.max_hops = 3
-    config.alpha = 0.1
+    config.alpha = 0.7
 
     config.dropout = 0.7
     config.attn_dropout = 0.7
@@ -97,7 +97,7 @@ def glant_config() -> ConfigDict:
 
     config.load_samples = False
     config.sampling_method = "balanced_unique_select"
-    config.num_samples = 500
+    config.num_samples = 100
 
     config.walk = ConfigDict()
     config.walk.gamma = 0.9

@@ -66,6 +66,19 @@ def photo_config() -> ConfigDict:
     return config
 
 
+def actor_config() -> ConfigDict:
+    config = ConfigDict()
+    config.name = "Actor"
+    config.in_channels = 932
+    config.out_channels = 5
+    config.num_nodes = 7600
+    config.save_path = "model_runs"
+    config.metrics = ["Accuracy"]
+    config.split_idx = 0
+
+    return config
+
+
 def wisconsin_config() -> ConfigDict:
     config = ConfigDict()
     config.name = "Wisconsin"
