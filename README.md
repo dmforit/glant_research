@@ -12,7 +12,7 @@ config.baselines.names = ["GLANT", "GAT", "GATv2", "GCN"]
 python main.py --train --datasets cora citeseer pubmed computers photo wisconsin texas --runs 5 --results-xlsx model_runs/results.xlsx
 ```
 
-Для запуска на CPU добавь `--gpu -1`:
+Для запуска на CPU необходимо добавить `--gpu -1`:
 
 ```powershell
 python main.py --train --datasets cora citeseer pubmed computers photo wisconsin texas --runs 5 --gpu -1 --results-xlsx model_runs/results.xlsx
