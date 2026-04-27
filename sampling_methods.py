@@ -27,9 +27,10 @@ def random_walk(
 ) -> Tensor:
     """Sample edges by repeatedly walking through k-hop neighbours."""
     total_visited = 0
+    max_samples = edge_index.shape[-1]
     restart = True
 
-    for _ in range(2 * num_samples):
+    for _ in range(2 * max_samples):
         if restart:
             source_node = np.random.randint(0, num_nodes)
             restart = False
@@ -51,7 +52,7 @@ def random_walk(
         source_node = target_node
         total_visited += 2
 
-        if total_visited == num_samples:
+        if total_visited >= max_samples:
             break
 
     return edge_index
@@ -293,3 +294,70 @@ def graph_search(
             break
 
     return edge_index
+
+
+def balanced_unique_select(
+    edge_index: Tensor,
+    hop_neighbours: HopNeighbours,
+    num_samples: int,
+    num_nodes: int,
+    hop: int,
+    device: torch.device,
+) -> Tensor:
+    if num_samples <= 0:
+        return edge_index[:, :0]
+
+    max_samples = min(num_samples, edge_index.shape[-1])
+    rng = np.random.default_rng()
+
+    cand = []
+    for v in range(num_nodes):
+        ns = list(dict.fromkeys(map(int, hop_neighbours[(hop, v)])))
+        ns = [u for u in ns if u != v]
+        rng.shuffle(ns)
+        cand.append(ns)
+
+    order = np.arange(num_nodes)
+    rng.shuffle(order)
+
+    seen = set()
+    total = 0
+
+    def add_one(v: int) -> bool:
+        nonlocal total
+
+        while cand[v]:
+            u = cand[v].pop()
+            e = (v, u)
+
+            if e in seen:
+                continue
+
+            seen.add(e)
+            edge_index[0, total] = v
+            edge_index[1, total] = u
+            total += 1
+            return True
+
+        return False
+
+    for v in order:
+        if total >= max_samples:
+            break
+        add_one(int(v))
+
+    active = [int(v) for v in order if cand[int(v)]]
+    i = 0
+
+    while total < max_samples and active:
+        v = active[i]
+        add_one(v)
+
+        if not cand[v]:
+            active.pop(i)
+            if active:
+                i %= len(active)
+        else:
+            i = (i + 1) % len(active)
+
+    return edge_index[:, :total]

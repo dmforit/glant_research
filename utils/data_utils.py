@@ -62,6 +62,18 @@ def pick_webkb_split(ds: Dataset, idx: int = 0) -> None:
         setattr(ds, mask_name(split), mask)
 
 
+def select_mask_split(ds: Dataset, idx: int = 0) -> None:
+    """Convert multi-split masks to a single split mask."""
+    graph = ds[0]
+    for split in SPLITS:
+        name = mask_name(split)
+        mask = getattr(graph, name)
+        if mask.dim() > 1:
+            mask = mask[:, idx]
+        setattr(graph, name, mask)
+        setattr(ds, name, mask)
+
+
 def mask_paths(root: Path) -> Paths:
     return {split: root / mask_name(split) for split in SPLITS}
 
@@ -252,6 +264,7 @@ def fetch_dataset(
 ) -> FetchResult:
     root = Path("Datasets") / ds_name
     paths = mask_paths(root)
+    cfg = ds_cfg(config, ds_name)
 
     print("Dataset loading...")
     ds = load_ds(ds_name, root, transform(paths), config.device)
@@ -259,10 +272,10 @@ def fetch_dataset(
 
     if ds_name not in WEBKB:
         sync_masks(ds)
+    select_mask_split(ds, getattr(cfg, "split_idx", 0))
 
     save_masks(ds[0], paths)
 
-    cfg = ds_cfg(config, ds_name)
     data = pack(ds, cfg)
 
     maybe_add_mh(data, config, cfg)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Optional, Union, Sequence, TypeAlias
+from typing import Optional, TypeAlias, Union
 
 import torch
 import torch.nn as nn
@@ -34,6 +34,7 @@ class GLANTConv(nn.Module):
         bias: bool = False,
         residual: bool = False,
         max_hops: int = 1,
+        share_weights: bool = False,
         **kwargs,
     ):
         super().__init__()
@@ -57,7 +58,7 @@ class GLANTConv(nn.Module):
                     fill_value=fill_value,
                     bias=bias,
                     residual=residual,
-                    share_weights=False,
+                    share_weights=share_weights,
                     **kwargs,
                 )
             )
@@ -89,7 +90,7 @@ class GLANTConv(nn.Module):
         for k, ei in enumerate(edges[1:], start=1):
             if ei.numel() == 0:
                 continue
-            out = out + self.theta[k - 1].sigmoid() * self.convs[k](x, ei)
+            out = out + F.softplus(self.theta[k - 1]) * self.convs[k](x, ei)
 
         return out
 
@@ -119,15 +120,23 @@ class GLANT(nn.Module):
         self.batchnorm = model_config.batchnorm
         self.layernorm = model_config.layernorm
         self.residual = model_config.residual
+        self.act = model_config.act
 
         num_layers = model_config.num_layers
+        conv_kwargs = {
+            "concat": model_config.concat,
+            "negative_slope": model_config.negative_slope,
+            "add_self_loops": model_config.add_self_loops,
+            "bias": model_config.bias,
+            "share_weights": model_config.share_weights,
+        }
 
         # Model layers and structures
 
         self._masks = {}
-        self.pre_lin = torch.nn.Linear(
-            ds_config.in_channels,
-            model_config.hidden_channels
+        self.pre_lin = (
+            torch.nn.Linear(ds_config.in_channels, model_config.hidden_channels)
+            if self.pre_linear else None
         )
         self.convs = nn.ModuleList()
         self.layernorms = nn.ModuleList()
@@ -138,67 +147,102 @@ class GLANT(nn.Module):
             raise ValueError("alpha must be in [0, 1]")
         if num_layers < 1:
             raise ValueError("num_layers must be positive")
-        
-        if not self.pre_linear:
+
+        hidden_input_dim = (
+            model_config.hidden_channels
+            if self.pre_linear
+            else ds_config.in_channels
+        )
+        hidden_layers = max(num_layers - 1, 0)
+        hidden_concat = model_config.heads > 1
+        hidden_out_channels = (
+            model_config.hidden_channels // model_config.heads
+            if hidden_concat
+            else model_config.hidden_channels
+        )
+        hidden_dim = (
+            hidden_out_channels * model_config.heads
+            if hidden_concat
+            else hidden_out_channels
+        )
+        hidden_conv_kwargs = {
+            **conv_kwargs,
+            "concat": hidden_concat,
+        }
+        output_conv_kwargs = {
+            **conv_kwargs,
+            "concat": False,
+        }
+
+        if hidden_layers > 0:
             self.convs.append(
                 GLANTConv(
-                    in_channels=ds_config.in_channels,
-                    out_channels=model_config.hidden_channels,
+                    in_channels=hidden_input_dim,
+                    out_channels=hidden_out_channels,
                     heads=model_config.heads,
-                    concat=False, # Option True -> change out_channels
                     dropout=self.dropout,
-                    max_hops=self.max_hops
+                    max_hops=self.max_hops,
+                    **hidden_conv_kwargs,
                 )
             )
             self.res_proj.append(
                 torch.nn.Linear(
-                    ds_config.in_channels,
-                    model_config.hidden_channels
+                    hidden_input_dim,
+                    hidden_dim,
                 )
             )
             self.layernorms.append(
                 torch.nn.LayerNorm(
-                    model_config.hidden_channels
+                    hidden_dim
                 )
             )
             self.batchnorms.append(
                 torch.nn.BatchNorm1d(
-                    model_config.hidden_channels
+                    hidden_dim
                 )
             )
-            num_layers -= 1
         
-        for _ in range(num_layers):
+        for _ in range(hidden_layers - 1):
             self.convs.append(
                 GLANTConv(
-                    in_channels=model_config.hidden_channels,
-                    out_channels=model_config.hidden_channels,
+                    in_channels=hidden_dim,
+                    out_channels=hidden_out_channels,
                     heads=model_config.heads,
-                    concat=False, # Option True -> change out_channels
                     dropout=self.dropout,
-                    max_hops=self.max_hops
+                    max_hops=self.max_hops,
+                    **hidden_conv_kwargs,
                 )
             )
             self.res_proj.append(
                 torch.nn.Linear(
-                    model_config.hidden_channels,
-                    model_config.hidden_channels
+                    hidden_dim,
+                    hidden_dim
                 )
             )
             self.layernorms.append(
                 torch.nn.LayerNorm(
-                    model_config.hidden_channels
+                    hidden_dim
                 )
             )
             self.batchnorms.append(
                 torch.nn.BatchNorm1d(
-                    model_config.hidden_channels
+                    hidden_dim
                 )
             )
         
-        self.prediction_layer = torch.nn.Linear(
-            model_config.hidden_channels,
-            ds_config.out_channels
+        self.convs.append(
+            GLANTConv(
+                in_channels=(
+                    hidden_dim
+                    if hidden_layers > 0
+                    else hidden_input_dim
+                ),
+                out_channels=ds_config.out_channels,
+                heads=1,
+                dropout=self.dropout,
+                max_hops=self.max_hops,
+                **output_conv_kwargs,
+            )
         )
 
     def reset_parameters(self) -> None:
@@ -213,8 +257,8 @@ class GLANT(nn.Module):
         for bn in self.batchnorms:
             bn.reset_parameters()
 
-        self.pre_lin.reset_parameters()
-        self.prediction_layer.reset_parameters()
+        if self.pre_lin is not None:
+            self.pre_lin.reset_parameters()
     
     @property
     def masks(self):
@@ -274,23 +318,31 @@ class GLANT(nn.Module):
         edge_attr: Optional[Tensor] = None,
     ) -> Tensor:
         if self.pre_linear:
-            x = self.pre_lin(x)
+            x = self.pre_lin(x) # type: ignore
             x = F.dropout(x, p=self.dropout, training=self.training)
 
         for i, conv in enumerate(self.convs):
+            is_last = i == len(self.convs) - 1
 
-            if self.residual:
+            if self.residual and not is_last:
                 x = conv(x, edge_index, edge_attr) + self.res_proj[i](x)
             else:
                 x = conv(x, edge_index, edge_attr)
+
+            if is_last:
+                return x
 
             if self.layernorm:
                 x = self.layernorms[i](x)
             elif self.batchnorm:
                 x = self.batchnorms[i](x)
             
-            x = F.relu(x)
+            if self.act == "elu":
+                x = F.elu(x)
+            elif self.act == "relu":
+                x = F.relu(x)
+            else:
+                raise ValueError("act must be 'elu' or 'relu'")
             x = F.dropout(x, p=self.dropout, training=self.training)
         
-        x = self.prediction_layer(x)
         return x

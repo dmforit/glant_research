@@ -7,12 +7,14 @@ from ml_collections import ConfigDict
 from torch import Tensor
 
 from sampling_methods import (
+    balanced_unique_select,
     graph_search,
     random_select,
     random_walk,
     sim_walk,
 )
 from utils.khop_utils import (
+    BALANCED_UNIQUE_SELECT_METHOD,
     BFS_METHOD,
     DFS_METHOD,
     GREEDY_METHOD,
@@ -89,6 +91,18 @@ def sample_random_hop(context: SamplingContext) -> Tensor:
     )
 
 
+def sample_balanced_unique_hop(context: SamplingContext) -> Tensor:
+    """Sample unique k-hop edges with balanced source coverage."""
+    return balanced_unique_select(
+        context.edge_index,
+        context.hop_neighbours,
+        context.num_samples,
+        context.num_nodes,
+        context.hop,
+        context.device,
+    )
+
+
 def sample_random_walk_hop(context: SamplingContext) -> Tensor:
     """Sample one hop by random walk."""
     return random_walk(
@@ -117,6 +131,7 @@ def sample_graph_search_hop(context: SamplingContext) -> Tensor:
 SAMPLING_HANDLERS: Dict[str, SamplingHandler] = {
     RANDOM_METHOD: sample_random_hop,
     RANDOM_WALK_METHOD: sample_random_walk_hop,
+    BALANCED_UNIQUE_SELECT_METHOD: sample_balanced_unique_hop,
     SIM_WALK_METHOD: sample_similarity_hop,
     GREEDY_METHOD: sample_similarity_hop,
     BFS_METHOD: sample_graph_search_hop,

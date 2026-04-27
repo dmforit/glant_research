@@ -54,6 +54,9 @@ def apply_cli_overrides(config: Any, pargs: argparse.Namespace) -> None:
     if pargs.runs is not None:
         config.experiments.runs = pargs.runs
 
+    if pargs.model is not None:
+        config.baselines.names = [pargs.model]
+
     if pargs.method is not None:
         print('Starting run with sampling method')
         config.baselines.names = ['GLANT']
@@ -65,10 +68,10 @@ def apply_cli_overrides(config: Any, pargs: argparse.Namespace) -> None:
         config.baselines.GLANT.load_samples = False
 
     if pargs.heads is not None:
-        config.baselines.GLANT.heads = pargs.heads
-
-    if pargs.model is not None:
-        config.baselines.names = [pargs.model]
+        for model_name in config.baselines.names:
+            model_config = config.baselines.get(model_name)
+            if model_config is not None and hasattr(model_config, 'heads'):
+                model_config.heads = pargs.heads
 
     configure_device(config, pargs.gpu)
 

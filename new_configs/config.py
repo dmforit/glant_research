@@ -10,7 +10,12 @@ from new_configs.data_config import (
     texas_config,
     wisconsin_config,
 )
-from new_configs.model_config import glant_config
+from new_configs.model_config import (
+    gat_config,
+    gatv2_config,
+    gcn_config,
+    glant_config,
+)
 
 
 def all_config() -> ConfigDict:
@@ -31,5 +36,8 @@ def all_config() -> ConfigDict:
     config.baselines = ConfigDict()
     config.baselines.names = ["GLANT"]
     config.baselines.GLANT = glant_config()
+    config.baselines.GAT = gat_config()
+    config.baselines.GATv2 = gatv2_config()
+    config.baselines.GCN = gcn_config()
 
     return config

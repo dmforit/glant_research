@@ -16,6 +16,7 @@ Metrics = Dict[str, Dict[str, List[float]]]
 ModelRegistry = Dict[str, nn.Module]
 
 GAT_MODEL = 'GAT'
+GATV2_MODEL = 'GATv2'
 GCN_MODEL = 'GCN'
 GLANT_MODEL = 'GLANT'
 
@@ -96,6 +97,26 @@ def create_gat_model(
         out_channels=ds_config.out_channels,
         heads=model_config.heads,
         dropout=model_config.dropout,
+        act=getattr(model_config, 'act', 'relu'),
+    )
+
+
+def create_gatv2_model(
+    config: ConfigDict,
+    ds_config: ConfigDict,
+) -> nn.Module:
+    """Create a PyG GATv2 model from config."""
+    model_config = config.baselines.GATv2
+    return GAT(
+        in_channels=ds_config.in_channels,
+        hidden_channels=model_config.hidden_channels,
+        num_layers=model_config.num_layers,
+        out_channels=ds_config.out_channels,
+        heads=model_config.heads,
+        dropout=model_config.dropout,
+        act=getattr(model_config, 'act', 'relu'),
+        v2=True,
+        share_weights=getattr(model_config, 'share_weights', False),
     )
 
 
@@ -157,6 +178,9 @@ def create_model(
 
     if model_name == GAT_MODEL:
         return create_gat_model(config, ds_config)
+
+    if model_name == GATV2_MODEL:
+        return create_gatv2_model(config, ds_config)
 
     if model_name == GCN_MODEL:
         return create_gcn_model(config, ds_config)

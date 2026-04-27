@@ -9,6 +9,7 @@ def cora_config() -> ConfigDict:
     config.num_nodes = 2708
     config.save_path = "model_runs"
     config.metrics = ["Accuracy"]
+    config.split_idx = 0
 
     return config
 
@@ -21,6 +22,7 @@ def pubmed_config() -> ConfigDict:
     config.num_nodes = 19717
     config.save_path = "model_runs"
     config.metrics = ["Accuracy"]
+    config.split_idx = 0
 
     return config
 
@@ -33,6 +35,7 @@ def citeseer_config() -> ConfigDict:
     config.num_nodes = 3327
     config.save_path = "model_runs"
     config.metrics = ["Accuracy"]
+    config.split_idx = 0
 
     return config
 
@@ -45,6 +48,7 @@ def computers_config() -> ConfigDict:
     config.num_nodes = 13752
     config.save_path = "model_runs"
     config.metrics = ["Accuracy"]
+    config.split_idx = 0
 
     return config
 
@@ -57,6 +61,7 @@ def photo_config() -> ConfigDict:
     config.num_nodes = 7650
     config.save_path = "model_runs"
     config.metrics = ["Accuracy"]
+    config.split_idx = 0
 
     return config
 
@@ -69,6 +74,7 @@ def wisconsin_config() -> ConfigDict:
     config.num_nodes = 251
     config.save_path = "model_runs"
     config.metrics = ["Accuracy"]
+    config.split_idx = 0
 
     return config
 
@@ -81,5 +87,6 @@ def texas_config() -> ConfigDict:
     config.num_nodes = 183
     config.save_path = "model_runs"
     config.metrics = ["Accuracy"]
+    config.split_idx = 0
 
     return config

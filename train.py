@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from itertools import product
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -10,7 +10,12 @@ import torch
 import torch.nn as nn
 import yaml
 from ml_collections import ConfigDict
-from torch.optim.lr_scheduler import ExponentialLR
+from torch.optim.lr_scheduler import (
+    CosineAnnealingLR,
+    ExponentialLR,
+    ReduceLROnPlateau,
+    StepLR,
+)
 
 from utils.model_utils import save_to_checkpoint
 
@@ -21,6 +26,14 @@ MetricCallables = Dict[str, Callable[[nn.Module, Any], float]]
 MetricHistory = Dict[str, Dict[str, List[float]]]
 
 MULTIHOP_MODEL_NAMES = {'GLANT'}
+
+
+def select_mask_column(mask: torch.Tensor, split_idx: int = 0) -> torch.Tensor:
+    """Return a 1D mask, selecting one split from multi-split masks."""
+    if mask.dim() <= 1:
+        return mask
+
+    return mask[:, split_idx]
 
 
 def get_args(
@@ -35,9 +48,9 @@ def get_args(
     }
     labels = graph.y.to(device)
     masks = {
-        'train': graph.train_mask.to(device),
-        'val': graph.val_mask.to(device),
-        'test': graph.test_mask.to(device),
+        'train': select_mask_column(graph.train_mask).to(device),
+        'val': select_mask_column(graph.val_mask).to(device),
+        'test': select_mask_column(graph.test_mask).to(device),
     }
 
     return args, labels, masks
@@ -178,6 +191,72 @@ def create_optimizer(
     )
 
 
+def create_scheduler(
+    optimiser: torch.optim.Optimizer,
+    model_config: ConfigDict,
+) -> Optional[Any]:
+    """Create learning-rate scheduler from model config."""
+    training = model_config.training
+    scheduler_config = getattr(training, 'scheduler', None)
+    scheduler_name = 'exponential' if scheduler_config is None else (
+        scheduler_config.name
+    )
+
+    if scheduler_name in {None, 'none'}:
+        return None
+
+    if scheduler_name == 'exponential':
+        gamma = getattr(
+            scheduler_config,
+            'gamma',
+            getattr(training, 'decay', 1.0),
+        )
+        return ExponentialLR(optimiser, gamma=gamma)
+
+    if scheduler_name == 'step':
+        return StepLR(
+            optimiser,
+            step_size=scheduler_config.step_size,
+            gamma=scheduler_config.gamma,
+        )
+
+    if scheduler_name == 'cosine':
+        return CosineAnnealingLR(
+            optimiser,
+            T_max=training.num_epochs,
+            eta_min=scheduler_config.eta_min,
+        )
+
+    if scheduler_name == 'plateau':
+        return ReduceLROnPlateau(
+            optimiser,
+            mode=scheduler_config.mode,
+            factor=scheduler_config.factor,
+            patience=scheduler_config.patience,
+            threshold=scheduler_config.threshold,
+            min_lr=scheduler_config.min_lr,
+        )
+
+    raise ValueError(
+        f'Invalid scheduler name {scheduler_name} in configuration file'
+    )
+
+
+def step_scheduler(
+    scheduler: Optional[Any],
+    val_loss: float,
+) -> None:
+    """Advance scheduler, using validation loss for plateau scheduling."""
+    if scheduler is None:
+        return
+
+    if isinstance(scheduler, ReduceLROnPlateau):
+        scheduler.step(val_loss)
+        return
+
+    scheduler.step()
+
+
 def print_epoch_summary(
     epoch: int,
     train_loss: float,
@@ -220,7 +299,7 @@ def train_model(
 ) -> Tuple[List[float], List[float]]:
     """Train model and return train/validation loss curves."""
     optimiser = create_optimizer(model, model_config)
-    scheduler = ExponentialLR(optimiser, gamma=model_config.training.decay)
+    scheduler = create_scheduler(optimiser, model_config)
 
     best_val_acc = 0.0
     best_test_acc = 0.0
@@ -240,7 +319,7 @@ def train_model(
 
         train_losses.append(train_loss)
         val_losses.append(val_loss)
-        scheduler.step()
+        step_scheduler(scheduler, val_loss)
 
         train_acc, val_acc, test_acc = test(model, data, device)
         if val_acc > best_val_acc:
@@ -356,7 +435,7 @@ def meta_train(
         data = select_dataset_for_model(model_name, dataset)
         reset_model(model)
         if model_name in MULTIHOP_MODEL_NAMES:
-            if not glant_masks:
+            if glant_masks is None:
                 print("Creating masks for GLANT")
                 print(f"Length: {len(data.edge_index)}")
                 glant_masks = model.create_masks(
