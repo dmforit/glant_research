@@ -434,15 +434,15 @@ def meta_train(
     ):
         data = select_dataset_for_model(model_name, dataset)
         reset_model(model)
-        if model_name in MULTIHOP_MODEL_NAMES:
-            if glant_masks is None:
-                print("Creating masks for GLANT")
-                print(f"Length: {len(data.edge_index)}")
-                glant_masks = model.create_masks(
-                    edge_index=data.edge_index,
-                    set_mask=True
-                )
-                data.edge_index = model.drop_edges(data.edge_index)
+        # if model_name in MULTIHOP_MODEL_NAMES:
+        #     if glant_masks is None:
+        #         print("Creating masks for GLANT")
+        #         print(f"Length: {len(data.edge_index)}")
+        #         glant_masks = model.create_masks(
+        #             edge_index=data.edge_index,
+        #             set_mask=True
+        #         )
+        #         data.edge_index = model.drop_edges(data.edge_index)
 
 
         model = model.to(device)

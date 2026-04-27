@@ -1,5 +1,9 @@
 import argparse
+import copy
 import json
+import zipfile
+from pathlib import Path
+from xml.sax.saxutils import escape
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -19,6 +23,7 @@ from utils.data_utils import (
 )
 
 SUPPORTED_GPU_IDS = {0, 1}
+DEFAULT_RESULTS_XLSX = 'model_runs/results.xlsx'
 
 
 def json_list(string: str) -> List[Any]:
@@ -133,13 +138,173 @@ def run_experiment(pargs: argparse.Namespace) -> Any:
     return all_metrics
 
 
+def selected_datasets(pargs: argparse.Namespace) -> List[str]:
+    if pargs.datasets is not None:
+        return pargs.datasets
+
+    return [pargs.dataset]
+
+
+def run_experiments(pargs: argparse.Namespace) -> Dict[str, Any]:
+    results = {}
+
+    for dataset in selected_datasets(pargs):
+        dataset_args = copy.copy(pargs)
+        dataset_args.dataset = dataset
+        print(f'\nRunning dataset: {dataset}\n')
+        results[dataset] = run_experiment(dataset_args)
+
+    save_results_xlsx(results, Path(pargs.results_xlsx))
+
+    return results
+
+
+def excel_column(index: int) -> str:
+    column = ''
+
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        column = chr(ord('A') + remainder) + column
+
+    return column
+
+
+def xlsx_cell(row: int, column: int, value: Any) -> str:
+    reference = f'{excel_column(column)}{row}'
+
+    if value is None:
+        return f'<c r="{reference}"/>'
+
+    if isinstance(value, (int, float, np.floating)) and np.isfinite(value):
+        return f'<c r="{reference}"><v>{float(value)}</v></c>'
+
+    text = escape(str(value))
+    return (
+        f'<c r="{reference}" t="inlineStr">'
+        f'<is><t>{text}</t></is>'
+        f'</c>'
+    )
+
+
+def mean_accuracy(metric_dict: Dict[str, List[float]]) -> Optional[float]:
+    accuracy = metric_dict.get('Accuracy', [])
+    if not accuracy:
+        return None
+
+    return float(np.mean(accuracy))
+
+
+def results_table(results: Dict[str, Any]) -> List[List[Any]]:
+    model_names = []
+    for dataset_metrics in results.values():
+        for model_name in dataset_metrics:
+            if model_name not in model_names:
+                model_names.append(model_name)
+
+    header = ['Model', *results.keys()]
+    rows = [header]
+
+    for model_name in model_names:
+        row = [model_name]
+        for dataset_name in results:
+            metric_dict = results[dataset_name].get(model_name, {})
+            row.append(mean_accuracy(metric_dict))
+        rows.append(row)
+
+    return rows
+
+
+def write_xlsx(rows: List[List[Any]], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    sheet_rows = []
+    for row_idx, row in enumerate(rows, start=1):
+        cells = ''.join(
+            xlsx_cell(row_idx, col_idx, value)
+            for col_idx, value in enumerate(row, start=1)
+        )
+        sheet_rows.append(f'<row r="{row_idx}">{cells}</row>')
+
+    sheet_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/'
+        'spreadsheetml/2006/main">'
+        '<sheetData>'
+        f'{"".join(sheet_rows)}'
+        '</sheetData>'
+        '</worksheet>'
+    )
+
+    with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as workbook:
+        workbook.writestr(
+            '[Content_Types].xml',
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/'
+            'package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.'
+            'openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/xl/workbook.xml" ContentType="application/'
+            'vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+            '<Override PartName="/xl/worksheets/sheet1.xml" ContentType='
+            '"application/vnd.openxmlformats-officedocument.spreadsheetml.'
+            'worksheet+xml"/>'
+            '</Types>',
+        )
+        workbook.writestr(
+            '_rels/.rels',
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/'
+            'package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/'
+            'officeDocument/2006/relationships/officeDocument" '
+            'Target="xl/workbook.xml"/>'
+            '</Relationships>',
+        )
+        workbook.writestr(
+            'xl/workbook.xml',
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<workbook xmlns="http://schemas.openxmlformats.org/'
+            'spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.'
+            'org/officeDocument/2006/relationships">'
+            '<sheets><sheet name="Results" sheetId="1" r:id="rId1"/>'
+            '</sheets></workbook>',
+        )
+        workbook.writestr(
+            'xl/_rels/workbook.xml.rels',
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/'
+            'package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/'
+            'officeDocument/2006/relationships/worksheet" '
+            'Target="worksheets/sheet1.xml"/>'
+            '</Relationships>',
+        )
+        workbook.writestr('xl/worksheets/sheet1.xml', sheet_xml)
+
+
+def save_results_xlsx(results: Dict[str, Any], path: Path) -> None:
+    if not results:
+        return
+
+    write_xlsx(results_table(results), path)
+    print(f'\nSaved summary results to {path}\n')
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument(
+    dataset_group = parser.add_mutually_exclusive_group(required=True)
+    dataset_group.add_argument(
         '--dataset',
         type=str,
-        required=True,
         help='The name of the dataset to run',
+    )
+    dataset_group.add_argument(
+        '--datasets',
+        type=str,
+        nargs='+',
+        default=None,
+        help='Dataset names to run sequentially',
     )
     parser.add_argument(
         '--gpu',
@@ -190,10 +355,16 @@ if __name__ == '__main__':
         default=None,
         help='Override number of experiment repeats',
     )
+    parser.add_argument(
+        '--results-xlsx',
+        type=str,
+        default=DEFAULT_RESULTS_XLSX,
+        help='Path for the summary XLSX file',
+    )
 
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument('--train', action='store_true', help='Train the model')
     mode.add_argument('--test', action='store_true', help='Test the model')
 
     args = parser.parse_args()
-    run_experiment(args)
+    run_experiments(args)

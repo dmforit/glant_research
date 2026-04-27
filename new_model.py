@@ -24,6 +24,7 @@ class GLANTConv(nn.Module):
         self,
         in_channels: int,
         out_channels: int,
+        alpha: float,
         heads: int = 1,
         concat: bool = False,
         negative_slope: float = 0.2,
@@ -52,7 +53,7 @@ class GLANTConv(nn.Module):
                     heads=heads,
                     concat=concat,
                     negative_slope=negative_slope,
-                    dropout=dropout,
+                    dropout=1 - ((1 - alpha) ** k),
                     add_self_loops=add_self_loops if k == 0 else False,
                     edge_dim=edge_dim if k == 0 else None,
                     fill_value=fill_value,
@@ -63,16 +64,16 @@ class GLANTConv(nn.Module):
                 )
             )
 
-        for k in range(1, max_hops):
-            self.convs[k].lin_l = self.convs[0].lin_l
+        # for k in range(1, max_hops):
+        #     self.convs[k].lin_l = self.convs[0].lin_l
 
-        self.theta = nn.Parameter(torch.zeros(max_hops - 1))
+        # self.theta = nn.Parameter(torch.zeros(max_hops - 1))
 
     def reset_parameters(self) -> None:
         for conv in self.convs:
             conv.reset_parameters()
 
-        nn.init.zeros_(self.theta)
+        # nn.init.zeros_(self.theta)
 
     def forward(
         self,
@@ -90,7 +91,8 @@ class GLANTConv(nn.Module):
         for k, ei in enumerate(edges[1:], start=1):
             if ei.numel() == 0:
                 continue
-            out = out + F.softplus(self.theta[k - 1]) * self.convs[k](x, ei)
+            # out = out + F.softplus(self.theta[k - 1]) * self.convs[k](x, ei)
+            out = out + self.convs[k](x, ei) / (k + 1)
 
         return out
 
@@ -179,6 +181,7 @@ class GLANT(nn.Module):
                 GLANTConv(
                     in_channels=hidden_input_dim,
                     out_channels=hidden_out_channels,
+                    alpha=self.alpha,
                     heads=model_config.heads,
                     dropout=self.dropout,
                     max_hops=self.max_hops,
@@ -207,6 +210,7 @@ class GLANT(nn.Module):
                 GLANTConv(
                     in_channels=hidden_dim,
                     out_channels=hidden_out_channels,
+                    alpha=self.alpha,
                     heads=model_config.heads,
                     dropout=self.dropout,
                     max_hops=self.max_hops,
@@ -238,6 +242,7 @@ class GLANT(nn.Module):
                     else hidden_input_dim
                 ),
                 out_channels=ds_config.out_channels,
+                alpha=self.alpha,
                 heads=1,
                 dropout=self.dropout,
                 max_hops=self.max_hops,

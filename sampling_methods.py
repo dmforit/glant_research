@@ -304,10 +304,19 @@ def balanced_unique_select(
     hop: int,
     device: torch.device,
 ) -> Tensor:
+    if hop <= 1:
+        return edge_index
+
     if num_samples <= 0:
         return edge_index[:, :0]
 
-    max_samples = min(num_samples, edge_index.shape[-1])
+    max_samples = num_samples
+    if edge_index.shape[-1] < max_samples:
+        edge_index = torch.empty(
+            (2, max_samples),
+            device=device,
+            dtype=edge_index.dtype,
+        )
     rng = np.random.default_rng()
 
     cand = []

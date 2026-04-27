@@ -34,7 +34,7 @@ def all_config() -> ConfigDict:
     config.experiments.runs = 20
 
     config.baselines = ConfigDict()
-    config.baselines.names = ["GLANT"]
+    config.baselines.names = ["GLANT"] # ["GLANT", "GAT", "GATv2"]
     config.baselines.GLANT = glant_config()
     config.baselines.GAT = gat_config()
     config.baselines.GATv2 = gatv2_config()

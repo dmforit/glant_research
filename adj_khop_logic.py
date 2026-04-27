@@ -139,6 +139,20 @@ SAMPLING_HANDLERS: Dict[str, SamplingHandler] = {
 }
 
 
+def sampling_budget(
+    method: str,
+    model_config: ConfigDict,
+    num_nodes: int,
+    default_num_samples: int,
+) -> int:
+    """Return total edge samples to generate for each extra hop."""
+    if method == BALANCED_UNIQUE_SELECT_METHOD:
+        samples_per_node = int(getattr(model_config, 'num_samples', 1))
+        return num_nodes * samples_per_node
+
+    return default_num_samples
+
+
 def get_sampling_handler(method: str) -> SamplingHandler:
     """Return a sampler for method or raise a consistent error."""
     try:
@@ -187,8 +201,13 @@ def get_K_adjs(
     """Build sampled adjacency lists for each configured hop."""
     num_hops = model_config.max_hops
     method = model_config.sampling_method
-    num_samples = adj_list.shape[-1]
     num_nodes = ds_config.num_nodes
+    num_samples = sampling_budget(
+        method,
+        model_config,
+        num_nodes,
+        adj_list.shape[-1],
+    )
 
     get_sampling_handler(method)
 

@@ -33,8 +33,8 @@ def glant_config() -> ConfigDict:
     config.model_name = "GLANT"
     config.num_layers = 2
     config.heads = 8
-    config.alpha = 0.3
-    config.max_hops = 3
+    config.alpha = 0.0
+    config.max_hops = 4
     config.hidden_channels = 64
     config.dropout = 0.7
     config.act = "elu"
@@ -49,6 +49,7 @@ def glant_config() -> ConfigDict:
     config.residual = False
     config.load_samples = False
     config.sampling_method = "balanced_unique_select"
+    config.num_samples = 1000
 
     config.walk = ConfigDict()
     config.walk.gamma = 0.9
