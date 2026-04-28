@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import secrets
 from copy import copy
 from itertools import product
 from pathlib import Path
@@ -18,8 +19,9 @@ from torch.optim.lr_scheduler import (
     StepLR,
 )
 
-from model import HopEdgeSparsifier
+from model import GLANT, HopEdgeSparsifier
 from utils.logger import logger
+from utils.model_names import canonical_model_name
 from utils.model_utils import save_to_checkpoint
 
 
@@ -32,7 +34,6 @@ HOP_AWARE_CONVS = {"hop_gated_gatv2"}
 
 
 def select_mask_column(mask: torch.Tensor, split_idx: int = 0) -> torch.Tensor:
-    """Return a 1D mask, selecting one split from multi-split masks."""
     if mask.dim() <= 1:
         return mask
 
@@ -40,12 +41,10 @@ def select_mask_column(mask: torch.Tensor, split_idx: int = 0) -> torch.Tensor:
 
 
 def is_hop_aware_config(model_config: ConfigDict) -> bool:
-    """Return True if model expects a list of hop edge_index tensors."""
     return str(getattr(model_config, "conv_type", "")).lower() in HOP_AWARE_CONVS
 
 
 def edge_counts(edge_index: Any) -> List[int]:
-    """Return edge counts for a Tensor edge_index or list of hop edge_index tensors."""
     if torch.is_tensor(edge_index):
         return [int(edge_index.size(1))]
 
@@ -58,7 +57,6 @@ def log_sparsification_progress(
     alpha: float,
     enabled: bool,
 ) -> None:
-    """Log higher-hop sparsification progress and edge counts."""
     if len(before) <= 1:
         logger.info("Edge sparsification skipped: no higher-hop edge sets")
         return
@@ -100,7 +98,7 @@ def select_dataset_for_model(
     dataset: ConfigDict,
     config: ConfigDict,
 ) -> Any:
-    """Return regular or multihop dataset for the selected model."""
+    model_name = canonical_model_name(model_name)
     model_config = config.baselines[model_name]
 
     if is_hop_aware_config(model_config):
@@ -114,12 +112,6 @@ def select_dataset_for_model(
 
 
 def sparsify_dataset_edges(data: Any, model_config: ConfigDict) -> Any:
-    """
-    Return a shallow dataset copy with sparsified higher-hop edges.
-
-    The first hop is unchanged. Higher hops are sparsified by HopEdgeSparsifier.
-    Ordinary edge_index Tensor is returned unchanged.
-    """
     if not is_hop_aware_config(model_config):
         return data
 
@@ -153,7 +145,6 @@ def get_args(
     data: Any,
     device: torch.device,
 ) -> Tuple[ModelArgs, torch.Tensor, Masks]:
-    """Prepare model kwargs, labels and masks for a PyG dataset."""
     graph = data[0]
     args = {
         "x": graph.x.to(device),
@@ -170,7 +161,6 @@ def get_args(
 
 
 def accuracy(model: nn.Module, data: Any, device: torch.device) -> float:
-    """Compute test accuracy."""
     model.eval()
     args, labels, masks = get_args(data, device)
 
@@ -185,7 +175,6 @@ def get_metric_functions(
     ds_config: ConfigDict,
     device: torch.device,
 ) -> MetricCallables:
-    """Return metric callables requested by dataset config."""
     metrics: MetricCallables = {}
 
     for metric_name in ds_config.metrics:  # type: ignore
@@ -204,7 +193,6 @@ def collect_metrics(
     data: Any,
     metric_callables: MetricCallables,
 ) -> Dict[str, float]:
-    """Evaluate all configured metrics."""
     return {
         name: metric(model, data)
         for name, metric in metric_callables.items()
@@ -216,7 +204,6 @@ def join_metrics(
     metrics: Dict[str, float],
     model_name: str,
 ) -> MetricHistory:
-    """Append one run of metrics to the accumulated history."""
     model_metrics = history.setdefault(model_name, {})
 
     for metric_name, metric_value in metrics.items():
@@ -230,13 +217,26 @@ def get_val_loss(
     data: Any,
     loss: nn.Module,
     device: torch.device,
+    *,
+    log_hop_diagnostics: bool = False,
+    hop_log_path: str = "model_runs/logs/hop_weights",
+    epoch: Optional[int] = None,
+    lr: Optional[float] = None,
+    log_only_layer: Optional[int] = None,
 ) -> float:
-    """Return validation loss for model."""
     model.eval()
     args, labels, masks = get_args(data, device)
 
     with torch.no_grad():
-        pred = model(**args)
+        pred = model(
+            **args,
+            log_hop_diagnostics=log_hop_diagnostics,
+            hop_log_path=hop_log_path,
+            epoch=epoch,
+            phase="val",
+            lr=lr,
+            log_only_layer=log_only_layer,
+        )
         val_loss = loss(pred[masks["val"]], labels[masks["val"]]).item()
 
     return val_loss
@@ -248,16 +248,37 @@ def train_step_normal(
     data: Any,
     device: torch.device,
     loss_func: nn.Module,
+    *,
+    log_hop_diagnostics: bool = False,
+    hop_log_path: str = "model_runs/logs/hop_weights",
+    epoch: Optional[int] = None,
+    lr: Optional[float] = None,
+    log_only_layer: Optional[int] = None,
 ) -> float:
-    """Run one standard supervised training step."""
     model.train()
     optimiser.zero_grad()
 
     args, labels, masks = get_args(data, device)
-    pred = model(**args)
+    lr = float(optimiser.param_groups[0]["lr"])
+    pred = model(
+        **args,
+        log_hop_diagnostics=log_hop_diagnostics,
+        hop_log_path=hop_log_path,
+        epoch=epoch,
+        phase="train",
+        lr=lr,
+        log_only_layer=log_only_layer,
+    )
     train_loss = loss_func(pred[masks["train"]], labels[masks["train"]])
 
     train_loss.backward()
+    if log_hop_diagnostics and hasattr(model, "log_hop_gate_gradients"):
+        model.log_hop_gate_gradients(
+            hop_log_path,
+            epoch=epoch,
+            phase="train",
+            optimizer=optimiser,
+        )
     optimiser.step()
 
     return train_loss.item()
@@ -267,13 +288,26 @@ def test(
     model: nn.Module,
     data: Any,
     device: torch.device,
+    *,
+    log_hop_diagnostics: bool = False,
+    hop_log_path: str = "model_runs/logs/hop_weights",
+    epoch: Optional[int] = None,
+    lr: Optional[float] = None,
+    log_only_layer: Optional[int] = None,
 ) -> Tuple[float, float, float]:
-    """Return train, validation and test accuracy."""
     model.eval()
     args, labels, masks = get_args(data, device)
 
     with torch.no_grad():
-        pred = model(**args).argmax(dim=-1)
+        pred = model(
+            **args,
+            log_hop_diagnostics=log_hop_diagnostics,
+            hop_log_path=hop_log_path,
+            epoch=epoch,
+            phase="test",
+            lr=lr,
+            log_only_layer=log_only_layer,
+        ).argmax(dim=-1)
 
     accs = []
     for mask in masks.values():
@@ -287,7 +321,6 @@ def create_optimizer(
     model: nn.Module,
     model_config: ConfigDict,
 ) -> torch.optim.Optimizer:
-    """Create optimizer from model config."""
     training = model_config.training
 
     if training.optimizer == "adam":
@@ -306,7 +339,6 @@ def create_scheduler(
     optimiser: torch.optim.Optimizer,
     model_config: ConfigDict,
 ) -> Optional[Any]:
-    """Create learning-rate scheduler from model config."""
     training = model_config.training
     scheduler_config = getattr(training, "scheduler", None)
     scheduler_name = "exponential" if scheduler_config is None else scheduler_config.name
@@ -355,7 +387,6 @@ def step_scheduler(
     scheduler: Optional[Any],
     val_loss: float,
 ) -> None:
-    """Advance scheduler, using validation loss for plateau scheduling."""
     if scheduler is None:
         return
 
@@ -376,7 +407,6 @@ def print_epoch_summary(
     best_val_acc: float,
     best_test_acc: float,
 ) -> None:
-    """Print compact training progress."""
     logger.info(
         (
             "Epoch: %s Train Loss %.4f Val Loss %.4f "
@@ -394,6 +424,60 @@ def print_epoch_summary(
     )
 
 
+def hop_log_enabled(model_config: ConfigDict, epoch: int) -> bool:
+    every = max(1, int(getattr(model_config, "hop_log_every", 10)))
+    return hop_logging_configured(model_config) and epoch % every == 0
+
+
+def hop_logging_configured(model_config: ConfigDict) -> bool:
+    return (
+        bool(getattr(model_config, "log_hop_diagnostics", False))
+        and is_hop_aware_config(model_config)
+    )
+
+
+def hop_log_root(model_config: ConfigDict) -> Path:
+    return Path(getattr(model_config, "hop_log_root", "./logs"))
+
+
+def resolve_hop_log_path(
+    *,
+    model_config: ConfigDict,
+    model_name: str,
+    dataset_name: str,
+    repeat_idx: int,
+) -> str:
+    root = hop_log_root(model_config)
+    log_dir = root / canonical_model_name(model_name) / dataset_name
+    suffix = secrets.token_hex(4)
+    return str(log_dir / f"run_{repeat_idx}_{suffix}")
+
+
+def write_hop_run_start(
+    model_config: ConfigDict,
+    path: str,
+) -> None:
+    if not hop_logging_configured(model_config):
+        return
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def write_hop_run_xlsx(
+    model: nn.Module,
+    model_config: ConfigDict,
+    path: str,
+) -> None:
+    if not hop_logging_configured(model_config):
+        return
+
+    if hasattr(model, "write_hop_summary_xlsx"):
+        model.write_hop_summary_xlsx(path)
+    else:
+        GLANT.write_hop_summary_xlsx(path)
+
+
 def train_model(
     model_config: ConfigDict,
     model: nn.Module,
@@ -401,11 +485,23 @@ def train_model(
     loss: nn.Module,
     save_dir: Path,
     device: torch.device,
+    *,
+    model_name: str,
+    dataset_name: str,
+    repeat_idx: int,
     do_save: bool = True,
 ) -> Tuple[List[float], List[float]]:
-    """Train model and return train/validation loss curves."""
     optimiser = create_optimizer(model, model_config)
     scheduler = create_scheduler(optimiser, model_config)
+    path = ""
+    if hop_logging_configured(model_config):
+        path = resolve_hop_log_path(
+            model_config=model_config,
+            model_name=model_name,
+            dataset_name=dataset_name,
+            repeat_idx=repeat_idx,
+        )
+    write_hop_run_start(model_config, path)
 
     best_val_acc = 0.0
     best_test_acc = 0.0
@@ -414,20 +510,48 @@ def train_model(
 
     model = model.to(device)
     for epoch in range(model_config.training.num_epochs):
+        log_hops = hop_log_enabled(model_config, epoch)
+        current_lr = float(optimiser.param_groups[0]["lr"])
+        only_layer = getattr(model_config, "hop_log_only_layer", None)
+
         train_loss = train_step_normal(
             model,
             optimiser,
             data,
             device=device,
             loss_func=loss,
+            log_hop_diagnostics=log_hops,
+            hop_log_path=path,
+            epoch=epoch,
+            lr=current_lr,
+            log_only_layer=only_layer,
         )
-        val_loss = get_val_loss(model, data, loss, device)
+        val_loss = get_val_loss(
+            model,
+            data,
+            loss,
+            device,
+            log_hop_diagnostics=log_hops,
+            hop_log_path=path,
+            epoch=epoch,
+            lr=current_lr,
+            log_only_layer=only_layer,
+        )
 
         train_losses.append(train_loss)
         val_losses.append(val_loss)
         step_scheduler(scheduler, val_loss)
 
-        train_acc, val_acc, test_acc = test(model, data, device)
+        train_acc, val_acc, test_acc = test(
+            model,
+            data,
+            device,
+            log_hop_diagnostics=log_hops,
+            hop_log_path=path,
+            epoch=epoch,
+            lr=current_lr,
+            log_only_layer=only_layer,
+        )
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             best_test_acc = test_acc
@@ -450,11 +574,12 @@ def train_model(
                 best_test_acc,
             )
 
+    write_hop_run_xlsx(model, model_config, path)
+
     return train_losses, val_losses
 
 
 def reset_model(model: nn.Module) -> None:
-    """Reset parameters when supported by the model."""
     if hasattr(model, "reset_parameters"):
         model.reset_parameters()
 
@@ -464,7 +589,6 @@ def save_loss_curves(
     val_loss: List[float],
     save_path: Path,
 ) -> None:
-    """Save train/validation loss curves."""
     plt.figure()
     plt.plot(train_loss)
     plt.plot(val_loss)
@@ -483,13 +607,11 @@ def save_loss_curves(
 
 
 def save_metrics(metrics: Dict[str, float], save_path: Path) -> None:
-    """Save metric dictionary as two-column text file."""
     rows = [[str(name), str(value)] for name, value in metrics.items()]
     np.savetxt(save_path, rows, fmt="%s")
 
 
 def save_config(config: ConfigDict, save_path: Path) -> None:
-    """Save config to YAML without non-serializable device."""
     config_dict = config.to_dict()
     config_dict.pop("device", None)
 
@@ -501,7 +623,6 @@ def load_model_checkpoint(
     checkpoint_path: Path,
     device: torch.device,
 ) -> nn.Module:
-    """Load a full model object saved by this project."""
     try:
         return torch.load(
             checkpoint_path,
@@ -519,7 +640,6 @@ def meta_train(
     dataset: ConfigDict,
     loss: nn.Module,
 ) -> MetricHistory:
-    """Run repeated training experiments for all configured models."""
     num_repeats = config.experiments.runs
     device = config.device
     metric_callables = get_metric_functions(ds_config, device)
@@ -556,6 +676,9 @@ def meta_train(
             loss,
             run_dir,
             device,
+            model_name=model_name,
+            dataset_name=ds_config.name,
+            repeat_idx=repeat_idx,
         )
         logger.info("Run: %s, Training completed", repeat_idx)
 

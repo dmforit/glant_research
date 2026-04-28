@@ -5,7 +5,7 @@ def training_config(
     lr: float = 0.05,
     weight_decay: float = 5e-4,
     num_epochs: int = 300,
-    scheduler_name: str = "none",
+    scheduler_name: str = "plateau",
 ) -> ConfigDict:
     config = ConfigDict()
 
@@ -14,16 +14,15 @@ def training_config(
     config.weight_decay = weight_decay
     config.num_epochs = num_epochs
     config.decay = 0.95
-    config.early_stop_patience = 100
     config.save_freq = 50
 
     config.scheduler = ConfigDict()
     config.scheduler.name = scheduler_name
     config.scheduler.mode = "min"
-    config.scheduler.factor = 0.5
+    config.scheduler.factor = 0.6
     config.scheduler.patience = 10
     config.scheduler.threshold = 1e-4
-    config.scheduler.min_lr = 1e-6
+    config.scheduler.min_lr = 1e-5
 
     return config
 
@@ -56,16 +55,19 @@ def base_gnn_config() -> ConfigDict:
     config.max_hops = 1
     config.alpha = None
 
-    config.training = training_config()
-    config.log_interval = 20
-
+    config.training = training_config(
+        lr=0.005,
+        weight_decay=5e-4,
+        num_epochs=300,
+        scheduler_name="plateau",
+    )
     return config
 
 
 def glant_config() -> ConfigDict:
     config = base_gnn_config()
 
-    config.model_name = "GLANT"
+    config.architecture = "mixture of all hops"
     config.conv_type = "hop_gated_gatv2"
 
     config.num_layers = 2
@@ -74,7 +76,7 @@ def glant_config() -> ConfigDict:
     config.concat = False
 
     config.max_hops = 3
-    config.alpha = 0.7
+    config.alpha = 0.6
 
     config.dropout = 0.7
     config.attn_dropout = 0.7
@@ -97,7 +99,11 @@ def glant_config() -> ConfigDict:
 
     config.load_samples = False
     config.sampling_method = "balanced_unique_select"
-    config.num_samples = 100
+    config.num_samples = 50
+
+    config.log_hop_diagnostics = True
+    config.hop_log_every = 50
+    config.hop_log_only_layer = None
 
     config.walk = ConfigDict()
     config.walk.gamma = 0.9
@@ -105,64 +111,36 @@ def glant_config() -> ConfigDict:
     config.walk.use_cosine = True
 
     config.training = training_config(
-        lr=0.005,
+        lr=0.05,
         weight_decay=5e-4,
         num_epochs=300,
-        scheduler_name="none",
+        scheduler_name="plateau",
     )
-
-    config.save_path = "./checkpoints/new_glant.pt"
 
     return config
 
 
 def gat_config() -> ConfigDict:
-    config = base_gnn_config()
+    config = glant_config()
 
-    config.model_name = "GAT"
     config.conv_type = "gat"
-
-    config.num_layers = 2
-    config.heads = 8
-    config.hidden_channels = 64
-    config.dropout = 0.6
-    config.attn_dropout = 0.6
-    config.act = "elu"
-
-    config.training = training_config(
-        lr=0.005,
-        weight_decay=5e-4,
-        num_epochs=300,
-        scheduler_name="none",
-    )
-
-    config.save_path = "./checkpoints/gat.pt"
+    config.max_hops = 1
+    config.alpha = None
+    config.sparsify_hops = False
+    config.log_hop_diagnostics = False
 
     return config
 
 
 def gatv2_config() -> ConfigDict:
-    config = base_gnn_config()
+    config = glant_config()
 
-    config.model_name = "GATv2"
     config.conv_type = "gatv2"
-
-    config.num_layers = 2
-    config.heads = 8
-    config.hidden_channels = 64
-    config.dropout = 0.7
-    config.attn_dropout = 0.7
-    config.act = "elu"
+    config.max_hops = 1
+    config.alpha = None
+    config.sparsify_hops = False
     config.share_weights = False
-
-    config.training = training_config(
-        lr=0.005,
-        weight_decay=5e-4,
-        num_epochs=300,
-        scheduler_name="none",
-    )
-
-    config.save_path = "./checkpoints/gatv2.pt"
+    config.log_hop_diagnostics = False
 
     return config
 
@@ -170,7 +148,6 @@ def gatv2_config() -> ConfigDict:
 def gcn_config() -> ConfigDict:
     config = base_gnn_config()
 
-    config.model_name = "GCN"
     config.conv_type = "gcn"
 
     config.num_layers = 2
@@ -185,7 +162,5 @@ def gcn_config() -> ConfigDict:
         num_epochs=300,
         scheduler_name="none",
     )
-
-    config.save_path = "./checkpoints/gcn.pt"
 
     return config

@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from itertools import product
-from typing import Any, Dict, Iterable, List, Tuple, Union
+from typing import Dict, Iterable, List, Tuple, Union
 
 import networkx as nx
-import numpy as np
 import torch
 from torch import Tensor
 
@@ -20,13 +19,6 @@ DFS_METHOD = 'dfs'
 BALANCED_UNIQUE_SELECT_METHOD = 'balanced_unique_select'
 SIMILARITY_WALK_METHODS = {SIM_WALK_METHOD, GREEDY_METHOD}
 GRAPH_SEARCH_METHODS = {BFS_METHOD, DFS_METHOD}
-SUPPORTED_METHODS = {
-    RANDOM_METHOD,
-    RANDOM_WALK_METHOD,
-    BALANCED_UNIQUE_SELECT_METHOD,
-    *SIMILARITY_WALK_METHODS,
-    *GRAPH_SEARCH_METHODS,
-}
 
 Node = Union[int, Tensor]
 Edge = Tuple[int, int]
@@ -109,16 +101,6 @@ def prepare_path_data(
     return path_lengths, extra_data
 
 
-def alter_paths(
-    shortest_paths: ShortestPaths,
-    cutoff: int,
-    method: str,
-    num_nodes: int,
-) -> Tuple[Union[PathLengths, Tensor], ExtraPathData]:
-    """Backward-compatible alias for prepare_path_data."""
-    return prepare_path_data(shortest_paths, cutoff, method, num_nodes)
-
-
 def add_bidirectional_edge(
     edge_index: Tensor,
     source_node: Node,
@@ -147,17 +129,6 @@ def add_bidirectional_edge(
         logger.warning('Only forward tensor assignment due to index out of bounds')
 
 
-def add_tensor(
-    set_of_tensors: Tensor,
-    node_i: Node,
-    node_j: Node,
-    index: int,
-    device: torch.device,
-) -> None:
-    """Backward-compatible alias for add_bidirectional_edge."""
-    add_bidirectional_edge(set_of_tensors, node_i, node_j, index, device)
-
-
 def build_dense_distance_matrix(
     path_lengths: PathLengths,
     num_nodes: int,
@@ -169,16 +140,6 @@ def build_dense_distance_matrix(
         distances[source_node, target_node] = hop_count
 
     return distances
-
-
-def add_to_dict(target: Dict[Any, List[Any]], key: Any, value: Any) -> None:
-    """Append value to a list stored under key."""
-    target.setdefault(key, []).append(value)
-
-
-def to_numpy(value: Tensor) -> np.ndarray:
-    """Detach a tensor and move it to NumPy."""
-    return value.cpu().detach().numpy()
 
 
 def node_to_int(node: Node) -> int:

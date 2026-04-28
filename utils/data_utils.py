@@ -13,6 +13,7 @@ from torch_geometric.transforms import Compose, NormalizeFeatures
 
 from sampling import get_K_adjs
 from utils.logger import logger
+from utils.model_names import canonical_model_name
 
 
 Dataset: TypeAlias = Any
@@ -21,7 +22,6 @@ Loader: TypeAlias = Callable[[str, Path, Compose, torch.device], Dataset]
 Edges: TypeAlias = list[Tensor]
 Masks: TypeAlias = dict[str, Tensor]
 Paths: TypeAlias = dict[str, Path]
-FetchResult: TypeAlias = ConfigDict | list[Any]
 
 SPLITS = ("train", "val", "test")
 WEBKB = frozenset({"Texas", "Wisconsin"})
@@ -278,6 +278,7 @@ def mh_cfg(config: ConfigDict) -> Optional[ConfigDict]:
     Current pipeline supports one shared multihop edge list per experiment.
     """
     for model_name in config.baselines.names:
+        model_name = canonical_model_name(model_name)
         if model_name not in config.baselines:
             continue
 
@@ -394,15 +395,10 @@ def maybe_add_mh(data: ConfigDict, config: ConfigDict, cfg: ConfigDict) -> None:
     logger.info("Building multihop edges - done.")
 
 
-def unpack(data: ConfigDict) -> list[Any]:
-    return [data[key] for key in data]
-
-
 def fetch_dataset(
     config: ConfigDict,
     ds_name: str,
-    unpack_: bool = False,
-) -> FetchResult:
+) -> ConfigDict:
     root = Path("Datasets") / ds_name
     paths = mask_paths(root)
     cfg = ds_cfg(config, ds_name)
@@ -418,4 +414,4 @@ def fetch_dataset(
     data = pack(ds, cfg)
     maybe_add_mh(data, config, cfg)
 
-    return unpack(data) if unpack_ else data
+    return data

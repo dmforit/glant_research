@@ -1,14 +1,21 @@
 from __future__ import annotations
 
+import csv
+import json
+import math
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any, Optional, TypeAlias, Union
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from ml_collections import ConfigDict
+from openpyxl import load_workbook
+from openpyxl.formatting.rule import ColorScaleRule
+from openpyxl.styles import Font, PatternFill
+from openpyxl.utils import get_column_letter
 from torch import Tensor
-
 from torch_geometric.nn import GATConv, GATv2Conv, GCNConv, SAGEConv
 
 
@@ -18,12 +25,10 @@ MaskDict: TypeAlias = dict[MaskKey, Tensor]
 
 
 def cfg_get(cfg: ConfigDict, name: str, default: Any = None) -> Any:
-    """Read a ConfigDict field with a default value."""
     return cfg[name] if name in cfg else default
 
 
 def as_edge_list(edge_index: EdgeInput) -> list[Tensor]:
-    """Convert a single edge_index or a sequence of edge_index tensors to a non-empty list."""
     edges = [edge_index] if torch.is_tensor(edge_index) else list(edge_index)
 
     if not edges:
@@ -39,51 +44,12 @@ def as_edge_list(edge_index: EdgeInput) -> list[Tensor]:
 
 
 class HopEdgeSparsifier(nn.Module):
-    """
-    Sparsifies higher-order hop edge sets.
-
-    Input can be either:
-
-        edge_index = E_1
-
-    or:
-
-        edge_index = [E_1, E_2, ..., E_K]
-
-    The first edge set E_1 is never changed. It corresponds to k=0.
-
-    For all higher-order edge sets, the module drops edges with probability:
-
-        p_drop(k) = (1 - alpha) ** k,
-
-    where k starts from 1 for E_2, 2 for E_3, and so on.
-
-    Therefore:
-
-        alpha = 0.0 -> all higher-order edges are removed.
-        alpha = 1.0 -> all higher-order edges are preserved.
-
-    The keep probability is:
-
-        p_keep(k) = 1 - (1 - alpha) ** k.
-    """
-
     def __init__(
         self,
         alpha: float,
         cache_masks: bool = True,
         enabled: bool = True,
     ) -> None:
-        """
-        Args:
-            alpha:
-                Higher-hop preservation parameter in [0, 1].
-            cache_masks:
-                If True, sampled masks are cached by edge_index identity.
-                If False, masks are resampled on every forward call.
-            enabled:
-                If False, the module returns edge_index unchanged.
-        """
         super().__init__()
 
         if not 0.0 <= alpha <= 1.0:
@@ -96,15 +62,12 @@ class HopEdgeSparsifier(nn.Module):
 
     @property
     def masks(self) -> MaskDict:
-        """Cached keep masks."""
         return self._masks
 
     def clear_cache(self) -> None:
-        """Clear cached masks."""
         self._masks.clear()
 
     def reset_parameters(self) -> None:
-        """Compatibility method. Clears cached masks."""
         self.clear_cache()
 
     def extra_repr(self) -> str:
@@ -116,34 +79,20 @@ class HopEdgeSparsifier(nn.Module):
 
     @staticmethod
     def _validate_edge_index(edge_index: Tensor, name: str) -> None:
-        """Validate edge_index shape."""
         if not torch.is_tensor(edge_index):
             raise TypeError(f"{name} must be a Tensor")
         if edge_index.dim() != 2 or edge_index.size(0) != 2:
             raise ValueError(f"{name} must have shape [2, num_edges]")
 
     def _drop_prob(self, k: int) -> float:
-        """
-        Return drop probability for higher-hop index k.
-
-        k=1 corresponds to E_2.
-        k=2 corresponds to E_3.
-        """
         if k < 1:
             raise ValueError("k must be >= 1 for higher-order hops")
         return (1.0 - self.alpha) ** k
 
     def _mask_key(self, k: int, edge_index: Tensor) -> MaskKey:
-        """Build cache key for a higher-hop edge_index."""
         return (k, edge_index.data_ptr(), edge_index.size(1), edge_index.device)
 
     def _make_mask(self, edge_index: Tensor, k: int) -> Tensor:
-        """
-        Create boolean keep mask.
-
-        True means keep the edge.
-        False means drop the edge.
-        """
         num_edges = edge_index.size(1)
 
         if num_edges == 0:
@@ -160,7 +109,6 @@ class HopEdgeSparsifier(nn.Module):
         return torch.rand(num_edges, device=edge_index.device) >= p_drop
 
     def _get_mask(self, edge_index: Tensor, k: int) -> Tensor:
-        """Return cached or newly sampled keep mask."""
         if not self.cache_masks:
             return self._make_mask(edge_index, k)
 
@@ -172,18 +120,6 @@ class HopEdgeSparsifier(nn.Module):
         return self._masks[key]
 
     def forward(self, edge_index: EdgeInput) -> EdgeInput:
-        """
-        Apply higher-hop sparsification.
-
-        Args:
-            edge_index:
-                Either a Tensor [2, E], or a sequence:
-                [edge_index_1, edge_index_2, ..., edge_index_K].
-
-        Returns:
-            Tensor input -> Tensor output.
-            Sequence input -> list[Tensor] output.
-        """
         if not self.enabled:
             return edge_index
 
@@ -209,39 +145,6 @@ class HopEdgeSparsifier(nn.Module):
 
 
 class HopGatedGATv2Conv(nn.Module):
-    """
-    Higher-order GATv2 layer with node-wise adaptive hop gating.
-
-    The layer receives either a single edge_index or a list of edge_index tensors:
-
-        edge_index = E_1
-
-    or
-
-        edge_index = [E_1, E_2, ..., E_K],
-
-    where E_k contains edges for the k-hop graph.
-
-    For each hop k, the layer computes a hop-specific GATv2 message:
-
-        M_k = GATv2_k(X, E_k).
-
-    Then, for each node i, it computes adaptive hop weights:
-
-        pi_i = softmax(W_hops x_i),
-
-    and mixes hop messages node-wise:
-
-        x_i' = sum_k pi_{ik} M_{k,i}.
-
-    Parameter sharing policy:
-        - W_left is shared across all hop-specific GATv2Conv modules.
-        - W_right is shared across all hop-specific GATv2Conv modules.
-        - W_left and W_right are still different matrices.
-        - Attention vectors are not shared across hops.
-        - Edge attributes are used only for the first hop.
-    """
-
     def __init__(
         self,
         in_channels: int,
@@ -260,41 +163,6 @@ class HopGatedGATv2Conv(nn.Module):
         gate_dropout: float = 0.0,
         **kwargs,
     ) -> None:
-        """
-        Args:
-            in_channels:
-                Input node feature dimension.
-            out_channels:
-                Output feature dimension per head.
-            max_hops:
-                Maximum number of hop edge sets.
-            heads:
-                Number of GATv2 attention heads.
-            concat:
-                If True, concatenate heads. Otherwise, average heads.
-            negative_slope:
-                Negative slope for LeakyReLU in GATv2 attention.
-            dropout:
-                Dropout probability inside GATv2 attention.
-            add_self_loops:
-                Whether to add self-loops for the first hop.
-                Higher hops do not receive self-loops.
-            edge_dim:
-                Edge feature dimension. Edge features are used only for the first hop.
-            fill_value:
-                Fill value for self-loop edge attributes in PyG GATv2Conv.
-            bias:
-                Whether to use bias in GATv2Conv.
-            residual:
-                Whether to use PyG GATv2Conv internal residual connection.
-            gate_hidden:
-                Hidden dimension for the hop gate MLP.
-                If None, the hop gate is a single Linear layer.
-            gate_dropout:
-                Dropout used inside the hop gate MLP.
-            **kwargs:
-                Additional arguments passed to PyG GATv2Conv.
-        """
         super().__init__()
 
         if max_hops < 1:
@@ -337,13 +205,9 @@ class HopGatedGATv2Conv(nn.Module):
                 nn.Linear(gate_hidden, self.max_hops),
             )
         )
+        self._init_hop_gate_as_one_hop()
 
     def _share_left_right_projections(self) -> None:
-        """
-        Shares W_left and W_right across all hop-specific GATv2Conv modules.
-
-        Attention vectors remain hop-specific.
-        """
         base = self.convs[0]
 
         for conv in self.convs[1:]:
@@ -351,20 +215,14 @@ class HopGatedGATv2Conv(nn.Module):
             conv.lin_r = base.lin_r
 
     def reset_parameters(self) -> None:
-        """
-        Resets trainable parameters.
-
-        Shared W_left/W_right are reset through the first GATv2Conv.
-        Hop-specific attention vectors are reset through their own GATv2Conv modules.
-        """
         for conv in self.convs:
             conv.reset_parameters()
 
         self._share_left_right_projections()
         self._reset_hop_gate()
+        self._init_hop_gate_as_one_hop()
 
     def _reset_hop_gate(self) -> None:
-        """Resets hop-gating network parameters."""
         if isinstance(self.hop_gate, nn.Linear):
             self.hop_gate.reset_parameters()
             return
@@ -373,35 +231,31 @@ class HopGatedGATv2Conv(nn.Module):
             if hasattr(module, "reset_parameters"):
                 module.reset_parameters()
 
+    def _init_hop_gate_as_one_hop(self) -> None:
+        first_bias = 1.0
+        other_bias = 0.0
+
+        if isinstance(self.hop_gate, nn.Linear):
+            nn.init.zeros_(self.hop_gate.weight)
+            nn.init.constant_(self.hop_gate.bias, other_bias)
+            self.hop_gate.bias.data[0] = first_bias
+            return
+
+        last = self.hop_gate[-1]
+        if not isinstance(last, nn.Linear):
+            raise TypeError("Last module of hop_gate must be nn.Linear")
+
+        nn.init.zeros_(last.weight)
+        nn.init.constant_(last.bias, other_bias)
+        last.bias.data[0] = first_bias
+
     def forward(
         self,
         x: Tensor,
         edge_index: EdgeInput,
         edge_attr: Optional[Tensor] = None,
-        return_hop_weights: bool = False,
-    ) -> Tensor | tuple[Tensor, Tensor]:
-        """
-        Applies hop-gated higher-order GATv2 convolution.
-
-        Args:
-            x:
-                Node features of shape [num_nodes, in_channels].
-            edge_index:
-                Either a single edge_index tensor of shape [2, num_edges],
-                or a sequence [edge_index_1, ..., edge_index_K].
-            edge_attr:
-                Optional edge features for the first hop only.
-            return_hop_weights:
-                If True, returns both output features and hop weights.
-
-        Returns:
-            If return_hop_weights is False:
-                Tensor of shape [num_nodes, out_dim].
-            If return_hop_weights is True:
-                Tuple:
-                    - output tensor of shape [num_nodes, out_dim]
-                    - hop weights of shape [num_nodes, num_hops]
-        """
+        return_hop_diagnostics: bool = False,
+    ) -> Tensor | tuple[Tensor, dict[str, Any]]:
         if edge_attr is not None and self.edge_dim is None:
             raise ValueError("edge_attr was provided, but edge_dim is None")
 
@@ -417,31 +271,47 @@ class HopGatedGATv2Conv(nn.Module):
 
         messages: list[Tensor] = []
         empty_hops: list[bool] = []
+        attention: list[dict[str, Any]] = []
 
         for k, ei in enumerate(edges):
             if ei.dim() != 2 or ei.size(0) != 2:
                 raise ValueError(f"edge_index at hop {k} must have shape [2, num_edges]")
 
             is_empty = ei.size(1) == 0
-
-            # For the first hop we still call GATv2Conv, because it may add
-            # self-loops and can therefore produce a non-empty message.
             skip_hop = is_empty and k > 0
             empty_hops.append(skip_hop)
 
             if skip_hop:
                 msg = x.new_zeros(num_nodes, self.out_dim)
+                if return_hop_diagnostics:
+                    attention.append({
+                        "hop": k,
+                        "att_edge_index": None,
+                        "alpha": None,
+                    })
             else:
-                msg = self.convs[k](
-                    x,
-                    ei,
-                    edge_attr=edge_attr if k == 0 else None,
-                )
+                if return_hop_diagnostics:
+                    msg, (att_edge_index, alpha) = self.convs[k](
+                        x,
+                        ei,
+                        edge_attr=edge_attr if k == 0 else None,
+                        return_attention_weights=True,
+                    )
+                    attention.append({
+                        "hop": k,
+                        "att_edge_index": att_edge_index.detach(),
+                        "alpha": alpha.detach(),
+                    })
+                else:
+                    msg = self.convs[k](
+                        x,
+                        ei,
+                        edge_attr=edge_attr if k == 0 else None,
+                    )
 
             messages.append(msg)
 
         messages_t = torch.stack(messages, dim=1)
-
         logits = self.hop_gate(x)[:, :num_hops]
 
         empty_t = torch.tensor(
@@ -453,7 +323,17 @@ class HopGatedGATv2Conv(nn.Module):
         if empty_t.all():
             out = x.new_zeros(num_nodes, self.out_dim)
             weights = x.new_zeros(num_nodes, num_hops)
-            return (out, weights) if return_hop_weights else out
+            diagnostics = None
+
+            if return_hop_diagnostics:
+                diagnostics = {
+                    "weights": weights.detach(),
+                    "num_hops": num_hops,
+                    "attention": attention,
+                }
+            if return_hop_diagnostics:
+                return out, diagnostics
+            return out
 
         if empty_t.any():
             logits = logits.masked_fill(empty_t.unsqueeze(0), float("-inf"))
@@ -461,37 +341,20 @@ class HopGatedGATv2Conv(nn.Module):
         weights = torch.softmax(logits, dim=-1)
         out = (messages_t * weights.unsqueeze(-1)).sum(dim=1)
 
-        return (out, weights) if return_hop_weights else out
+        diagnostics = None
+        if return_hop_diagnostics:
+            diagnostics = {
+                "weights": weights.detach(),
+                "num_hops": num_hops,
+                "attention": attention,
+            }
+
+        if return_hop_diagnostics:
+            return out, diagnostics
+        return out
 
 
 class GLANT(nn.Module):
-    """
-    General node-classification GNN wrapper.
-
-    Supports both ordinary PyG message-passing layers and hop-aware layers.
-
-    Ordinary layers receive only the first edge set:
-
-        edge_index = E_1
-
-    Hop-aware layers receive the full list:
-
-        edge_index = [E_1, E_2, ..., E_K]
-
-    This wrapper does not sparsify higher-hop edges. If higher-hop sparsification
-    is needed, it should be done before calling the model:
-
-        edge_index = sparsifier(edge_index, alpha)
-        logits = model(x, edge_index, edge_attr)
-
-    Supported conv_type values:
-        - "hop_gated_gatv2"
-        - "gatv2"
-        - "gat"
-        - "sage"
-        - "gcn"
-    """
-
     HOP_AWARE_CONVS = {"hop_gated_gatv2"}
     EDGE_ATTR_CONVS = {"hop_gated_gatv2", "gatv2", "gat"}
 
@@ -499,13 +362,11 @@ class GLANT(nn.Module):
         self,
         model_config: ConfigDict,
         ds_config: ConfigDict,
-        device: Optional[torch.device] = None,
     ) -> None:
         super().__init__()
 
         self.model_config = model_config
-        self.ds_config = ds_config
-        self.device = device
+        self._attention_baselines: dict[tuple[str, int, int], dict[str, Any]] = {}
 
         self.conv_type = str(cfg_get(model_config, "conv_type", "hop_gated_gatv2")).lower()
 
@@ -602,7 +463,6 @@ class GLANT(nn.Module):
 
     @staticmethod
     def _resolve_hidden_channels(model_config: ConfigDict) -> int:
-        """Resolve hidden dimension from model_config."""
         hidden_channels = cfg_get(model_config, "hidden_channels", None)
         if hidden_channels is None:
             raise ValueError("model_config must contain hidden_channels")
@@ -610,7 +470,6 @@ class GLANT(nn.Module):
 
     @staticmethod
     def _resolve_in_channels(ds_config: ConfigDict) -> int:
-        """Resolve input dimension from ds_config."""
         in_channels = cfg_get(ds_config, "in_channels", None)
         if in_channels is None:
             raise ValueError("ds_config must contain in_channels")
@@ -618,7 +477,6 @@ class GLANT(nn.Module):
 
     @staticmethod
     def _resolve_out_channels(ds_config: ConfigDict) -> int:
-        """Resolve output dimension from ds_config."""
         out_channels = cfg_get(ds_config, "out_channels", None)
         if out_channels is None:
             out_channels = cfg_get(ds_config, "num_classes", None)
@@ -628,18 +486,6 @@ class GLANT(nn.Module):
 
     @staticmethod
     def _resolve_norm_type(model_config: ConfigDict) -> str:
-        """
-        Resolve normalization type.
-
-        Supports new style:
-
-            norm = "none" | "batchnorm" | "layernorm"
-
-        and old style:
-
-            batchnorm = True
-            layernorm = True
-        """
         if "norm" in model_config:
             return str(model_config.norm).lower()
 
@@ -656,12 +502,6 @@ class GLANT(nn.Module):
         return "none"
 
     def _attention_args(self, out_dim: int, is_last: bool) -> dict[str, Any]:
-        """
-        Build dimensional arguments for attention layers.
-
-        Hidden layers may use multi-head concatenation.
-        Output layer always uses heads=1 and concat=False.
-        """
         if is_last:
             return {
                 "out_channels": out_dim,
@@ -694,7 +534,6 @@ class GLANT(nn.Module):
         out_dim: int,
         is_last: bool,
     ) -> nn.Module:
-        """Create one convolution layer."""
         if self.conv_type == "hop_gated_gatv2":
             return self._make_hop_gated_gatv2(in_channels, out_dim, is_last)
 
@@ -726,11 +565,6 @@ class GLANT(nn.Module):
         out_dim: int,
         is_last: bool,
     ) -> nn.Module:
-        """
-        Create HopGatedGATv2Conv.
-
-        Requires HopGatedGATv2Conv to be defined or imported.
-        """
         return HopGatedGATv2Conv(
             in_channels=in_channels,
             max_hops=self.max_hops,
@@ -752,7 +586,6 @@ class GLANT(nn.Module):
         out_dim: int,
         is_last: bool,
     ) -> nn.Module:
-        """Create ordinary PyG GATv2Conv."""
         return GATv2Conv(
             in_channels=in_channels,
             negative_slope=float(cfg_get(self.model_config, "negative_slope", 0.2)),
@@ -771,7 +604,6 @@ class GLANT(nn.Module):
         out_dim: int,
         is_last: bool,
     ) -> nn.Module:
-        """Create ordinary PyG GATConv."""
         return GATConv(
             in_channels=in_channels,
             negative_slope=float(cfg_get(self.model_config, "negative_slope", 0.2)),
@@ -784,7 +616,6 @@ class GLANT(nn.Module):
         )
 
     def _make_norm(self, dim: int) -> nn.Module:
-        """Create hidden normalization layer."""
         if self.norm_type == "batchnorm":
             return nn.BatchNorm1d(dim)
         if self.norm_type == "layernorm":
@@ -792,7 +623,6 @@ class GLANT(nn.Module):
         return nn.Identity()
 
     def reset_parameters(self) -> None:
-        """Reset all trainable parameters."""
         if self.pre_lin is not None:
             self.pre_lin.reset_parameters()
 
@@ -807,17 +637,13 @@ class GLANT(nn.Module):
         for proj in self.res_proj:
             proj.reset_parameters()
 
+        self._attention_baselines.clear()
+
     def _validate_edge_attr(
         self,
         edges: list[Tensor],
         edge_attr: Optional[Tensor],
     ) -> None:
-        """
-        Validate edge attributes.
-
-        edge_attr must correspond to the first edge set E_1.
-        For hop-aware layers, edge_attr is passed into the first hop only.
-        """
         if edge_attr is None:
             return
 
@@ -838,8 +664,418 @@ class GLANT(nn.Module):
                 f"edge_attr.size(0)={edge_attr.size(0)}, edges[0].size(1)={edges[0].size(1)}"
             )
 
+    @staticmethod
+    def _tensor_list(tensor: Tensor) -> list[Any]:
+        def clean(value: Any) -> Any:
+            if isinstance(value, list):
+                return [clean(item) for item in value]
+            if isinstance(value, float) and not math.isfinite(value):
+                return None
+            return value
+
+        return clean(tensor.detach().cpu().tolist())
+
+    @staticmethod
+    def _tensor_float(tensor: Tensor) -> float:
+        value = float(tensor.detach().cpu().item())
+        return value if math.isfinite(value) else math.nan
+
+    @staticmethod
+    def _norm(tensor: Optional[Tensor]) -> Optional[float]:
+        if tensor is None:
+            return None
+        return float(tensor.detach().norm().cpu().item())
+
+    @staticmethod
+    def _lr(optimizer: Optional[Any]) -> Optional[float]:
+        if optimizer is None or not getattr(optimizer, "param_groups", None):
+            return None
+        return float(optimizer.param_groups[0]["lr"])
+
+    @staticmethod
+    def _attention_norm_entropy_mean(
+        att_edge_index: Optional[Tensor],
+        alpha: Optional[Tensor],
+        eps: float = 1e-12,
+        max_nodes: int = 100,
+    ) -> float:
+        if att_edge_index is None or alpha is None or alpha.numel() == 0:
+            return math.nan
+
+        values = alpha.detach()
+        if values.dim() == 1:
+            values = values.unsqueeze(-1)
+
+        dst = att_edge_index[1].detach()
+        nodes = torch.unique(dst)[:max_nodes]
+
+        entropies: list[Tensor] = []
+
+        for node in nodes:
+            mask = dst == node
+            deg = int(mask.sum().item())
+
+            if deg <= 1:
+                continue
+
+            node_values = values[mask].clamp_min(eps)
+            probs = node_values / node_values.sum(dim=0, keepdim=True).clamp_min(eps)
+
+            entropy = -(probs * torch.log(probs)).sum(dim=0)
+            norm_entropy = entropy / math.log(deg)
+
+            entropies.append(norm_entropy)
+
+        if not entropies:
+            return math.nan
+
+        return float(torch.stack(entropies, dim=0).mean().detach().cpu().item())
+
+    def _attention_baseline_metrics(
+        self,
+        *,
+        phase: str,
+        layer_id: int,
+        hop_id: int,
+        att_edge_index: Optional[Tensor],
+        alpha: Optional[Tensor],
+    ) -> dict[str, float]:
+        out = {
+            "attention_mae_from_baseline": math.nan,
+            "attention_max_abs_diff_from_baseline": math.nan,
+            "attention_cosine_to_baseline": math.nan,
+        }
+
+        if att_edge_index is None or alpha is None:
+            return out
+
+        key = (phase, layer_id, hop_id)
+        current_edge_index = att_edge_index.detach().cpu()
+        current_alpha = alpha.detach().cpu()
+
+        if key not in self._attention_baselines:
+            self._attention_baselines[key] = {
+                "att_edge_index": current_edge_index,
+                "alpha": current_alpha,
+            }
+            return out
+
+        baseline = self._attention_baselines[key]
+        baseline_edge_index = baseline["att_edge_index"]
+        baseline_alpha = baseline["alpha"]
+
+        if (
+            current_edge_index.shape != baseline_edge_index.shape
+            or current_alpha.shape != baseline_alpha.shape
+            or not torch.equal(current_edge_index, baseline_edge_index)
+        ):
+            return out
+
+        diff = current_alpha - baseline_alpha
+
+        out["attention_mae_from_baseline"] = self._tensor_float(diff.abs().mean())
+        out["attention_max_abs_diff_from_baseline"] = self._tensor_float(diff.abs().max())
+        out["attention_cosine_to_baseline"] = self._tensor_float(
+            F.cosine_similarity(
+                current_alpha.flatten().unsqueeze(0),
+                baseline_alpha.flatten().unsqueeze(0),
+                dim=1,
+            )[0]
+        )
+
+        return out
+
+    def _hop_gate_grad_norm(self, conv: HopGatedGATv2Conv) -> float:
+        total_sq = 0.0
+
+        for param in conv.hop_gate.parameters():
+            grad_norm = self._norm(param.grad)
+            if grad_norm is not None:
+                total_sq += grad_norm * grad_norm
+
+        return total_sq ** 0.5
+
+    def _summarize_hop_diagnostics(
+        self,
+        conv: HopGatedGATv2Conv,
+        diagnostics: dict[str, Any],
+        *,
+        epoch: Optional[int],
+        phase: str,
+        layer_id: int,
+        lr: Optional[float],
+    ) -> dict[str, Any]:
+        weights = diagnostics["weights"]
+        attention = diagnostics.get("attention", [])
+        num_hops = int(diagnostics["num_hops"])
+
+        log_attention_metrics = phase in {"val", "test"}
+
+        attention_stats = []
+        for item in attention:
+            if not log_attention_metrics:
+                continue
+
+            baseline_metrics = self._attention_baseline_metrics(
+                phase=phase,
+                layer_id=layer_id,
+                hop_id=item["hop"],
+                att_edge_index=item.get("att_edge_index"),
+                alpha=item.get("alpha"),
+            )
+            attention_stats.append({
+                "hop": item["hop"],
+                "attention_norm_entropy_mean": self._attention_norm_entropy_mean(
+                    item.get("att_edge_index"),
+                    item.get("alpha"),
+                ),
+                **baseline_metrics,
+            })
+
+        return {
+            "event": "forward",
+            "epoch": epoch,
+            "phase": phase,
+            "layer_id": layer_id,
+            "lr": lr,
+            "num_hops": num_hops,
+            "weights_shape": list(weights.shape),
+            "weights_mean": self._tensor_list(weights.mean(dim=0)),
+            "weights_std": self._tensor_list(weights.std(dim=0, unbiased=False)),
+            "attention": attention_stats,
+        }
+
+    @staticmethod
+    def _write_hop_diagnostics(path: str | Path, event: dict[str, Any]) -> None:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        GLANT._write_hop_summary_csv(path, event)
+
+    @staticmethod
+    def _summary_path(path: Path) -> Path:
+        if path.suffix == ".csv":
+            return path
+        return path.with_name(f"{path.stem}_summary.csv")
+
+    @staticmethod
+    def _flatten_hop_values(
+        row: dict[str, Any],
+        prefix: str,
+        values: Optional[list[Any]],
+    ) -> None:
+        if values is None:
+            return
+        for idx, value in enumerate(values):
+            row[f"{prefix}_hop_{idx}"] = value
+
+    @staticmethod
+    def _write_pretty_excel(csv_path: Path) -> None:
+        if not csv_path.exists() or csv_path.stat().st_size == 0:
+            return
+
+        import pandas as pd
+
+        xlsx_path = csv_path.with_suffix(".xlsx")
+
+        df = pd.read_csv(csv_path)
+        df.to_excel(xlsx_path, index=False)
+
+        wb = load_workbook(xlsx_path)
+        ws = wb.active
+
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = ws.dimensions
+
+        header_fill = PatternFill("solid", fgColor="1F2937")
+        header_font = Font(color="FFFFFF", bold=True)
+
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+
+        for col_idx, column_cells in enumerate(ws.columns, start=1):
+            max_len = max(
+                len(str(cell.value)) if cell.value is not None else 0
+                for cell in column_cells
+            )
+            ws.column_dimensions[get_column_letter(col_idx)].width = min(
+                max(max_len + 2, 10),
+                35,
+            )
+
+        phase_col = None
+        for cell in ws[1]:
+            if cell.value == "phase":
+                phase_col = cell.column
+                break
+
+        if phase_col is not None:
+            fills = {
+                "train": PatternFill("solid", fgColor="DBEAFE"),
+                "val": PatternFill("solid", fgColor="DCFCE7"),
+                "test": PatternFill("solid", fgColor="FEF3C7"),
+            }
+
+            for row_idx in range(2, ws.max_row + 1):
+                phase = ws.cell(row=row_idx, column=phase_col).value
+                fill = fills.get(str(phase))
+
+                if fill is None:
+                    continue
+
+                for col_idx in range(1, ws.max_column + 1):
+                    ws.cell(row=row_idx, column=col_idx).fill = fill
+
+        metric_keywords = (
+            "attention_norm_entropy_mean",
+            "attention_mae_from_baseline",
+            "attention_max_abs_diff_from_baseline",
+            "attention_cosine_to_baseline",
+            "weights_mean",
+            "weights_std",
+            "grad_norm",
+        )
+
+        for cell in ws[1]:
+            name = str(cell.value)
+
+            if not any(key in name for key in metric_keywords):
+                continue
+
+            col = get_column_letter(cell.column)
+
+            ws.conditional_formatting.add(
+                f"{col}2:{col}{ws.max_row}",
+                ColorScaleRule(
+                    start_type="min",
+                    start_color="FFFFFF",
+                    mid_type="percentile",
+                    mid_value=50,
+                    mid_color="FFE699",
+                    end_type="max",
+                    end_color="F8696B",
+                ),
+            )
+
+        wb.save(xlsx_path)
+
+    @staticmethod
+    def _summary_fieldnames(num_hops: int) -> list[str]:
+        fields = [
+            "event",
+            "epoch",
+            "phase",
+            "layer_id",
+            "lr",
+            "num_hops",
+            "weights_shape",
+            "grad_norm",
+        ]
+
+        for hop in range(num_hops):
+            fields.append(f"weights_mean_hop_{hop}")
+
+        for hop in range(num_hops):
+            fields.append(f"weights_std_hop_{hop}")
+
+        for hop in range(num_hops):
+            fields.extend([
+                f"attention_norm_entropy_mean_hop_{hop}",
+                f"attention_mae_from_baseline_hop_{hop}",
+                f"attention_max_abs_diff_from_baseline_hop_{hop}",
+                f"attention_cosine_to_baseline_hop_{hop}",
+            ])
+
+        return fields
+
+    @staticmethod
+    def _write_hop_summary_csv(path: Path, event: dict[str, Any]) -> None:
+        summary_path = GLANT._summary_path(path)
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+
+        num_hops = int(event.get("num_hops") or 0)
+        fieldnames = GLANT._summary_fieldnames(num_hops)
+
+        row = {
+            "event": event.get("event"),
+            "epoch": event.get("epoch"),
+            "phase": event.get("phase"),
+            "layer_id": event.get("layer_id"),
+            "lr": event.get("lr"),
+            "num_hops": event.get("num_hops"),
+            "weights_shape": (
+                json.dumps(event.get("weights_shape"))
+                if event.get("weights_shape") is not None
+                else None
+            ),
+            "grad_norm": event.get("grad_norm"),
+        }
+
+        GLANT._flatten_hop_values(row, "weights_mean", event.get("weights_mean"))
+        GLANT._flatten_hop_values(row, "weights_std", event.get("weights_std"))
+
+        for hop_item in event.get("attention", []) or []:
+            hop = hop_item["hop"]
+
+            row[f"attention_norm_entropy_mean_hop_{hop}"] = hop_item.get(
+                "attention_norm_entropy_mean"
+            )
+            row[f"attention_mae_from_baseline_hop_{hop}"] = hop_item.get(
+                "attention_mae_from_baseline"
+            )
+            row[f"attention_max_abs_diff_from_baseline_hop_{hop}"] = hop_item.get(
+                "attention_max_abs_diff_from_baseline"
+            )
+            row[f"attention_cosine_to_baseline_hop_{hop}"] = hop_item.get(
+                "attention_cosine_to_baseline"
+            )
+
+        file_exists = summary_path.exists() and summary_path.stat().st_size > 0
+
+        with summary_path.open("a", encoding="utf-8", newline="") as writer_file:
+            writer = csv.DictWriter(
+                writer_file,
+                fieldnames=fieldnames,
+                extrasaction="ignore",
+            )
+
+            if not file_exists:
+                writer.writeheader()
+
+            writer.writerow(row)
+
+    @staticmethod
+    def write_hop_summary_xlsx(path: str | Path) -> None:
+        path = Path(path)
+        summary_path = GLANT._summary_path(path)
+        GLANT._write_pretty_excel(summary_path)
+
+    def log_hop_gate_gradients(
+        self,
+        path: str | Path,
+        *,
+        epoch: Optional[int] = None,
+        phase: str = "train",
+        optimizer: Optional[Any] = None,
+    ) -> None:
+        for layer_id, conv in enumerate(self.convs):
+            if not isinstance(conv, HopGatedGATv2Conv):
+                continue
+
+            self._write_hop_diagnostics(
+                path,
+                {
+                    "event": "backward",
+                    "epoch": epoch,
+                    "phase": phase,
+                    "layer_id": layer_id,
+                    "lr": self._lr(optimizer),
+                    "num_hops": conv.max_hops,
+                    "grad_norm": self._hop_gate_grad_norm(conv),
+                },
+            )
+
     def _activate(self, x: Tensor) -> Tensor:
-        """Apply configured activation."""
         if self.act == "relu":
             return F.relu(x)
         if self.act == "elu":
@@ -852,14 +1088,17 @@ class GLANT(nn.Module):
         x: Tensor,
         edges: list[Tensor],
         edge_attr: Optional[Tensor],
-    ) -> Tensor:
-        """
-        Call a hop-aware or ordinary convolution.
-
-        Hop-aware conv receives all hop edge sets.
-        Ordinary conv receives only the first edge set.
-        """
+        return_hop_diagnostics: bool = False,
+    ) -> Tensor | tuple[Tensor, dict[str, Any]]:
         ei: EdgeInput = edges if self.use_hops else edges[0]
+
+        if return_hop_diagnostics and isinstance(conv, HopGatedGATv2Conv):
+            return conv(
+                x,
+                ei,
+                edge_attr=edge_attr if edge_attr is not None and self.use_edge_attr else None,
+                return_hop_diagnostics=True,
+            )
 
         if edge_attr is not None and self.use_edge_attr:
             return conv(x, ei, edge_attr=edge_attr)
@@ -871,22 +1110,13 @@ class GLANT(nn.Module):
         x: Tensor,
         edge_index: EdgeInput,
         edge_attr: Optional[Tensor] = None,
+        log_hop_diagnostics: bool = False,
+        hop_log_path: str = "model_runs/logs/hop_weights",
+        epoch: Optional[int] = None,
+        phase: str = "train",
+        lr: Optional[float] = None,
+        log_only_layer: Optional[int] = None,
     ) -> Tensor:
-        """
-        Forward pass.
-
-        Args:
-            x:
-                Node features of shape [num_nodes, in_channels].
-            edge_index:
-                Either ordinary edge_index of shape [2, num_edges] or a list:
-                [edge_index_1, ..., edge_index_K].
-            edge_attr:
-                Optional edge attributes for the first edge set E_1.
-
-        Returns:
-            Node logits of shape [num_nodes, out_channels].
-        """
         edges = as_edge_list(edge_index)
         self._validate_edge_attr(edges, edge_attr)
 
@@ -896,13 +1126,35 @@ class GLANT(nn.Module):
 
         for i, conv in enumerate(self.convs):
             is_last = i == len(self.convs) - 1
+            want_hop_diagnostics = (
+                log_hop_diagnostics
+                and isinstance(conv, HopGatedGATv2Conv)
+                and (log_only_layer is None or log_only_layer == i)
+            )
 
-            h = self._call_conv(
+            conv_out = self._call_conv(
                 conv=conv,
                 x=x,
                 edges=edges,
                 edge_attr=edge_attr,
+                return_hop_diagnostics=want_hop_diagnostics,
             )
+
+            if want_hop_diagnostics:
+                h, diagnostics = conv_out
+                self._write_hop_diagnostics(
+                    hop_log_path,
+                    self._summarize_hop_diagnostics(
+                        conv=conv,
+                        diagnostics=diagnostics,
+                        epoch=epoch,
+                        phase=phase,
+                        layer_id=i,
+                        lr=lr,
+                    ),
+                )
+            else:
+                h = conv_out
 
             if is_last:
                 return h

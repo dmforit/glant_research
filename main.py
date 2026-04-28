@@ -1,7 +1,7 @@
 import argparse
 import copy
-import json
 import zipfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from xml.sax.saxutils import escape
@@ -13,24 +13,13 @@ from torch import nn
 from configs.config import all_config
 from train import meta_train
 from utils.data_utils import ds_cfg, fetch_dataset
-from utils.logger import log_selected_configs, logger
+from utils.logger import logger
+from utils.model_names import canonical_model_name, canonical_model_names
 from utils.model_utils import create_models, load_from_checkpoint
 
 
 SUPPORTED_GPU_IDS = {0, 1}
-DEFAULT_RESULTS_XLSX = "model_runs/results.xlsx"
-
-
-def json_list(string: str) -> List[Any]:
-    try:
-        value = json.loads(string)
-    except json.JSONDecodeError as exc:
-        raise argparse.ArgumentTypeError("Input must be a JSON list") from exc
-
-    if not isinstance(value, list):
-        raise argparse.ArgumentTypeError("Input must be a JSON list")
-
-    return value
+DEFAULT_RESULTS_DIR = Path("results")
 
 
 def configure_device(config: Any, gpu: Optional[int]) -> None:
@@ -50,9 +39,12 @@ def configure_device(config: Any, gpu: Optional[int]) -> None:
     config.device = torch.device(f"cuda:{gpu}")
 
 
-def selected_model_config(config: Any) -> Any:
-    model_name = config.baselines.names[0]
-    return config.baselines[model_name]
+def model_args(values: List[str]) -> List[str]:
+    """Flatten CLI model arguments, supporting spaces and comma-separated lists."""
+    names: List[str] = []
+    for value in values:
+        names.extend(name.strip() for name in value.split(",") if name.strip())
+    return names
 
 
 def apply_cli_overrides(config: Any, pargs: argparse.Namespace) -> None:
@@ -60,7 +52,7 @@ def apply_cli_overrides(config: Any, pargs: argparse.Namespace) -> None:
         config.experiments.runs = pargs.runs
 
     if pargs.model is not None:
-        config.baselines.names = [pargs.model]
+        config.baselines.names = canonical_model_names(model_args(pargs.model))
 
     if pargs.method is not None:
         logger.info("Starting run with sampling method")
@@ -79,6 +71,9 @@ def apply_cli_overrides(config: Any, pargs: argparse.Namespace) -> None:
         config.baselines.GLANT.num_samples = pargs.num_samples
         config.baselines.GLANT.load_samples = False
 
+    if pargs.load_samples:
+        config.baselines.GLANT.load_samples = True
+
     if pargs.conv_type is not None:
         config.baselines.GLANT.conv_type = pargs.conv_type
         if pargs.conv_type != "hop_gated_gatv2":
@@ -86,6 +81,7 @@ def apply_cli_overrides(config: Any, pargs: argparse.Namespace) -> None:
 
     if pargs.heads is not None:
         for model_name in config.baselines.names:
+            model_name = canonical_model_name(model_name)
             model_config = config.baselines.get(model_name)
             if model_config is not None and hasattr(model_config, "heads"):
                 model_config.heads = pargs.heads
@@ -104,15 +100,15 @@ def execute_run(
         raise ValueError("Exactly one mode must be selected: --train or --test")
 
     if pargs.train:
-        models = create_models(config, ds_config, data_dict)
+        models = create_models(config, ds_config)
         return meta_train(config, ds_config, models, data_dict, loss)
 
     runs = config.experiments.runs
-    return load_from_checkpoint(config, pargs.dataset, runs)
+    return load_from_checkpoint(config, pargs.dataset, runs, Path(pargs.checkpoint))
 
 
 def get_selected_method(config: Any) -> Optional[str]:
-    model_name = config.baselines.names[0]
+    model_name = canonical_model_name(config.baselines.names[0])
     model_config = config.baselines.get(model_name)
     if model_config is None:
         return None
@@ -138,7 +134,6 @@ def run_experiment(pargs: argparse.Namespace) -> Any:
     apply_cli_overrides(config, pargs)
 
     ds_config = ds_cfg(config, pargs.dataset)
-    log_selected_configs(config, ds_config)
     logger.info("Fetching Dataset: %s", pargs.dataset)
     data_dict = fetch_dataset(config, pargs.dataset)
     logger.info("Fetching Dataset - done")
@@ -158,6 +153,59 @@ def selected_datasets(pargs: argparse.Namespace) -> List[str]:
     return [pargs.dataset]
 
 
+def selected_model_names(pargs: argparse.Namespace) -> List[str]:
+    if pargs.method is not None:
+        return ["GLANT"]
+
+    if pargs.model is not None:
+        return canonical_model_names(model_args(pargs.model))
+
+    return canonical_model_names(all_config().baselines.names)
+
+
+def slug(value: object) -> str:
+    text = str(value)
+    chars = [
+        char.lower() if char.isalnum() else "-"
+        for char in text
+    ]
+    out = "-".join(part for part in "".join(chars).split("-") if part)
+    return out or "none"
+
+
+def results_xlsx_filename(pargs: argparse.Namespace) -> str:
+    datasets = "-".join(slug(dataset) for dataset in selected_datasets(pargs))
+    model_names = selected_model_names(pargs)
+    models = "-".join(slug(model) for model in model_names)
+    glant_config = all_config().baselines.GLANT
+    if pargs.conv_type is not None:
+        glant_config.conv_type = pargs.conv_type
+
+    architecture = ""
+    if "GLANT" in model_names and glant_config.conv_type == "hop_gated_gatv2":
+        architecture = f"_architecture-{slug(glant_config.architecture)}"
+
+    mode = "train" if pargs.train else "test"
+    runs = slug(pargs.runs if pargs.runs is not None else "config")
+    timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+    filename = (
+        f"{mode}_datasets-{datasets}_models-{models}{architecture}_"
+        f"runs-{runs}_{timestamp}.xlsx"
+    )
+    return filename
+
+
+def results_xlsx_path(pargs: argparse.Namespace) -> Path:
+    filename = results_xlsx_filename(pargs)
+
+    if pargs.results_xlsx is None:
+        return DEFAULT_RESULTS_DIR / filename
+
+    path = Path(pargs.results_xlsx)
+    output_dir = path.parent if path.suffix.lower() == ".xlsx" else path
+    return output_dir / filename
+
+
 def run_experiments(pargs: argparse.Namespace) -> Dict[str, Any]:
     results = {}
 
@@ -167,7 +215,7 @@ def run_experiments(pargs: argparse.Namespace) -> Dict[str, Any]:
         logger.info("Running dataset: %s", dataset)
         results[dataset] = run_experiment(dataset_args)
 
-    save_results_xlsx(results, Path(pargs.results_xlsx))
+    save_results_xlsx(results, results_xlsx_path(pargs))
 
     return results
 
@@ -346,6 +394,11 @@ if __name__ == "__main__":
         help="Override number of sampled edges per node/hop",
     )
     parser.add_argument(
+        "--load-samples",
+        action="store_true",
+        help="Load cached sampled hop edges from disk when available",
+    )
+    parser.add_argument(
         "--conv-type",
         type=str,
         default=None,
@@ -365,13 +418,6 @@ if __name__ == "__main__":
         help="Checkpoint directory for loading models",
     )
     parser.add_argument(
-        "--load",
-        type=json_list,
-        nargs="+",
-        default=None,
-        help="Load models from a JSON list",
-    )
-    parser.add_argument(
         "--method",
         type=str,
         default=None,
@@ -380,8 +426,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model",
         type=str,
+        nargs="+",
         default=None,
-        help="Override model from the config file",
+        help="Override model list from the config file",
     )
     parser.add_argument(
         "--runs",
@@ -392,8 +439,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--results-xlsx",
         type=str,
-        default=DEFAULT_RESULTS_XLSX,
-        help="Path for the summary XLSX file",
+        default=None,
+        help="Directory for generated summary XLSX files",
     )
 
     mode = parser.add_mutually_exclusive_group(required=True)

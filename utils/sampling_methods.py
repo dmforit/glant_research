@@ -37,7 +37,6 @@ def log_sampling_edges(method: str, hop: int, sampled: int, total: int) -> None:
 def random_walk(
     edge_index: Tensor,
     hop_neighbours: HopNeighbours,
-    num_samples: int,
     num_nodes: int,
     hop: int,
     device: torch.device,

@@ -109,7 +109,6 @@ def sample_random_walk_hop(context: SamplingContext) -> Tensor:
     return random_walk(
         context.edge_index,
         context.hop_neighbours,
-        context.num_samples,
         context.num_nodes,
         context.hop,
         context.device,
