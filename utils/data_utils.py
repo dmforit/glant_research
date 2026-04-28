@@ -9,6 +9,7 @@ import torch
 import torch_geometric.datasets as pygds
 from ml_collections import ConfigDict
 from torch import Tensor
+from torch_geometric.data import Data
 from torch_geometric.transforms import Compose, NormalizeFeatures
 
 from sampling import get_K_adjs
@@ -18,7 +19,7 @@ from utils.model_names import canonical_model_name
 
 Dataset: TypeAlias = Any
 Graph: TypeAlias = Any
-Loader: TypeAlias = Callable[[str, Path, Compose, torch.device], Dataset]
+Loader: TypeAlias = Callable[[str, Path, Compose, torch.device, ConfigDict], Dataset]
 Edges: TypeAlias = list[Tensor]
 Masks: TypeAlias = dict[str, Tensor]
 Paths: TypeAlias = dict[str, Path]
@@ -36,7 +37,38 @@ DS_CFG = {
     "Actor": "actor",
     "Wisconsin": "wisconsin",
     "Texas": "texas",
+    "AIFB": "aifb",
+    "MUTAG": "mutag",
+    "BGS": "bgs",
+    "DBLP": "dblp",
+    "IMDB": "imdb",
+    "ACM": "acm",
 }
+
+
+class SingleGraphDataset:
+    def __init__(self, graph: Data) -> None:
+        self.graph = graph
+
+    def __getitem__(self, index: int) -> Data:
+        if index != 0:
+            raise IndexError(index)
+        return self.graph
+
+    def __len__(self) -> int:
+        return 1
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("__"):
+            raise AttributeError(name)
+        return getattr(self.graph, name)
+
+    def __copy__(self) -> SingleGraphDataset:
+        return SingleGraphDataset(copy(self.graph))
+
+    def to(self, device: torch.device) -> SingleGraphDataset:
+        self.graph = self.graph.to(device)
+        return self
 
 
 def mask_name(split: str) -> str:
@@ -196,7 +228,14 @@ def transform(paths: Paths) -> Compose:
     return Compose(steps)
 
 
-def planetoid(name: str, root: Path, _: Compose, device: torch.device) -> Dataset:
+def planetoid(
+    name: str,
+    root: Path,
+    _: Compose,
+    device: torch.device,
+    cfg: ConfigDict,
+) -> Dataset:
+    del cfg
     return pygds.Planetoid(
         root=str(root),
         name=name,
@@ -204,18 +243,317 @@ def planetoid(name: str, root: Path, _: Compose, device: torch.device) -> Datase
     ).to(device)
 
 
-def amazon(name: str, root: Path, tr: Compose, device: torch.device) -> Dataset:
+def amazon(
+    name: str,
+    root: Path,
+    tr: Compose,
+    device: torch.device,
+    cfg: ConfigDict,
+) -> Dataset:
+    del cfg
     return pygds.Amazon(root=str(root), name=name, transform=tr).to(device)
 
 
-def actor(_: str, root: Path, tr: Compose, device: torch.device) -> Dataset:
+def actor(
+    _: str,
+    root: Path,
+    tr: Compose,
+    device: torch.device,
+    cfg: ConfigDict,
+) -> Dataset:
+    del cfg
     return pygds.Actor(root=str(root), transform=tr).to(device)
 
 
-def webkb(name: str, root: Path, _: Compose, device: torch.device) -> Dataset:
+def webkb(
+    name: str,
+    root: Path,
+    _: Compose,
+    device: torch.device,
+    cfg: ConfigDict,
+) -> Dataset:
+    del cfg
     ds = pygds.WebKB(root=str(root), name=name).to(device)
     pick_webkb_split(ds)
     return ds
+
+
+def split_train_val_mask(
+    train_mask: Tensor,
+    *,
+    val_ratio: float = 0.2,
+    seed: int = 0,
+) -> tuple[Tensor, Tensor]:
+    train_idx = train_mask.nonzero(as_tuple=False).view(-1).cpu()
+    if train_idx.numel() < 2:
+        return train_mask, torch.zeros_like(train_mask)
+
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    train_idx = train_idx[torch.randperm(train_idx.numel(), generator=generator)]
+    val_count = max(1, int(train_idx.numel() * val_ratio))
+    val_idx = train_idx[:val_count]
+    keep_idx = train_idx[val_count:]
+
+    new_train_mask = torch.zeros_like(train_mask)
+    val_mask = torch.zeros_like(train_mask)
+    new_train_mask[keep_idx.to(train_mask.device)] = True
+    val_mask[val_idx.to(train_mask.device)] = True
+    return new_train_mask, val_mask
+
+
+def select_split_mask(mask: Tensor, cfg: ConfigDict) -> Tensor:
+    if mask.dim() > 1:
+        mask = mask[:, int(getattr(cfg, "split_idx", 0))]
+    return mask
+
+
+def set_dynamic_cfg(cfg: ConfigDict, graph: Data) -> None:
+    cfg.in_channels = int(graph.x.size(-1))
+    cfg.out_channels = int(graph.y.max().item()) + 1
+    cfg.num_nodes = int(graph.num_nodes)
+
+
+def make_index_masks(
+    num_nodes: int,
+    train_idx: Tensor,
+    test_idx: Tensor,
+    *,
+    device: torch.device,
+    seed: int,
+) -> Masks:
+    train_mask = torch.zeros(num_nodes, dtype=torch.bool, device=device)
+    test_mask = torch.zeros(num_nodes, dtype=torch.bool, device=device)
+    train_mask[train_idx.to(device=device, dtype=torch.long)] = True
+    test_mask[test_idx.to(device=device, dtype=torch.long)] = True
+    train_mask, val_mask = split_train_val_mask(train_mask, seed=seed)
+    return {"train": train_mask, "val": val_mask, "test": test_mask}
+
+
+def entity_labels_and_masks(graph: Data, cfg: ConfigDict, device: torch.device) -> tuple[Tensor, Masks]:
+    num_nodes = int(graph.num_nodes)
+    seed = int(getattr(cfg, "split_seed", 0))
+
+    if hasattr(graph, "y") and graph.y is not None and graph.y.numel() == num_nodes:
+        y = graph.y.to(device=device, dtype=torch.long).view(-1)
+        if hasattr(graph, "train_mask") and hasattr(graph, "test_mask"):
+            train_mask = select_split_mask(graph.train_mask, cfg).to(
+                device=device,
+                dtype=torch.bool,
+            ).view(-1)
+            test_mask = select_split_mask(graph.test_mask, cfg).to(
+                device=device,
+                dtype=torch.bool,
+            ).view(-1)
+            train_mask, val_mask = split_train_val_mask(train_mask, seed=seed)
+            return y, {"train": train_mask, "val": val_mask, "test": test_mask}
+
+    if all(hasattr(graph, name) for name in ("train_idx", "test_idx", "train_y", "test_y")):
+        train_idx = graph.train_idx.view(-1)
+        test_idx = graph.test_idx.view(-1)
+        y = torch.zeros(num_nodes, dtype=torch.long, device=device)
+        y[train_idx.to(device=device, dtype=torch.long)] = graph.train_y.to(device=device, dtype=torch.long).view(-1)
+        y[test_idx.to(device=device, dtype=torch.long)] = graph.test_y.to(device=device, dtype=torch.long).view(-1)
+        masks = make_index_masks(
+            num_nodes,
+            train_idx,
+            test_idx,
+            device=device,
+            seed=seed,
+        )
+        return y, masks
+
+    raise ValueError(f"{cfg.name} does not expose node labels and train/test splits")
+
+
+def entity_dataset(
+    name: str,
+    root: Path,
+    _: Compose,
+    device: torch.device,
+    cfg: ConfigDict,
+) -> Dataset:
+    raw = pygds.Entities(root=str(root), name=name)
+    graph = raw[0]
+    graph.num_nodes = int(graph.num_nodes)
+    graph.edge_index = graph.edge_index.to(device=device, dtype=torch.int64)
+    graph.x = torch.ones((graph.num_nodes, 1), dtype=torch.float32, device=device)
+
+    graph.y, masks = entity_labels_and_masks(graph, cfg, device)
+    for split, mask in masks.items():
+        setattr(graph, mask_name(split), mask)
+
+    set_dynamic_cfg(cfg, graph)
+    return SingleGraphDataset(graph)
+
+
+def target_node_type(data: Any, cfg: ConfigDict) -> str:
+    configured = getattr(cfg, "target_node_type", None)
+    if configured is not None and str(configured) in data.node_types:
+        return str(configured)
+
+    for node_type in data.node_types:
+        store = data[node_type]
+        if hasattr(store, "y") and hasattr(store, "train_mask"):
+            return str(node_type)
+
+    raise ValueError(f"{cfg.name} does not expose a labelled target node type")
+
+
+def node_offsets(data: Any) -> dict[str, int]:
+    offsets: dict[str, int] = {}
+    offset = 0
+    for node_type in data.node_types:
+        offsets[str(node_type)] = offset
+        offset += int(data[node_type].num_nodes)
+    return offsets
+
+
+def hetero_node_features(data: Any, offsets: dict[str, int]) -> Tensor:
+    max_feature_dim = 0
+    for node_type in data.node_types:
+        x = getattr(data[node_type], "x", None)
+        if torch.is_tensor(x):
+            if x.dim() == 1:
+                x = x.unsqueeze(-1)
+            max_feature_dim = max(max_feature_dim, int(x.size(-1)))
+
+    num_types = len(data.node_types)
+    total_nodes = sum(int(data[node_type].num_nodes) for node_type in data.node_types)
+    x = torch.zeros((total_nodes, max_feature_dim + num_types), dtype=torch.float32)
+    type_offset = max_feature_dim
+
+    for type_idx, node_type in enumerate(data.node_types):
+        store = data[node_type]
+        start = offsets[str(node_type)]
+        stop = start + int(store.num_nodes)
+        node_x = getattr(store, "x", None)
+
+        if torch.is_tensor(node_x):
+            if node_x.dim() == 1:
+                node_x = node_x.unsqueeze(-1)
+            node_x = node_x.to(dtype=torch.float32)
+            x[start:stop, :node_x.size(-1)] = node_x
+
+        x[start:stop, type_offset + type_idx] = 1.0
+
+    return x
+
+
+def target_masks(
+    total_nodes: int,
+    target_start: int,
+    target_stop: int,
+    target_store: Any,
+    cfg: ConfigDict,
+) -> Masks:
+    train_mask = torch.zeros(total_nodes, dtype=torch.bool)
+    val_mask = torch.zeros(total_nodes, dtype=torch.bool)
+    test_mask = torch.zeros(total_nodes, dtype=torch.bool)
+
+    if hasattr(target_store, "train_mask") and hasattr(target_store, "test_mask"):
+        target_train = select_split_mask(target_store.train_mask, cfg).to(dtype=torch.bool).view(-1)
+        target_test = select_split_mask(target_store.test_mask, cfg).to(dtype=torch.bool).view(-1)
+
+        if hasattr(target_store, "val_mask"):
+            target_val = select_split_mask(target_store.val_mask, cfg).to(dtype=torch.bool).view(-1)
+        else:
+            target_train, target_val = split_train_val_mask(
+                target_train,
+                seed=int(getattr(cfg, "split_seed", 0)),
+            )
+
+        train_mask[target_start:target_stop] = target_train
+        val_mask[target_start:target_stop] = target_val
+        test_mask[target_start:target_stop] = target_test
+        return {"train": train_mask, "val": val_mask, "test": test_mask}
+
+    target_node_count = target_stop - target_start
+    generated = random_masks(
+        target_node_count,
+        train_ratio=float(getattr(cfg, "train_ratio", 0.6)),
+        val_ratio=float(getattr(cfg, "val_ratio", 0.2)),
+        seed=int(getattr(cfg, "split_seed", 0)),
+    )
+    train_mask[target_start:target_stop] = generated["train"]
+    val_mask[target_start:target_stop] = generated["val"]
+    test_mask[target_start:target_stop] = generated["test"]
+    return {"train": train_mask, "val": val_mask, "test": test_mask}
+
+
+def hetero_to_homogeneous(data: Any, cfg: ConfigDict, device: torch.device) -> Data:
+    target = target_node_type(data, cfg)
+    offsets = node_offsets(data)
+    total_nodes = sum(int(data[node_type].num_nodes) for node_type in data.node_types)
+    x = hetero_node_features(data, offsets)
+
+    edge_indices = []
+    make_undirected = bool(getattr(cfg, "hetero_to_homo_undirected", True))
+    for src_type, _, dst_type in data.edge_types:
+        edge_index = data[(src_type, _, dst_type)].edge_index
+        edge_index = edge_index.clone()
+        edge_index[0] += offsets[str(src_type)]
+        edge_index[1] += offsets[str(dst_type)]
+        edge_indices.append(edge_index)
+        if make_undirected:
+            edge_indices.append(edge_index.flip(0))
+
+    if not edge_indices:
+        raise ValueError(f"{cfg.name} does not contain edges")
+
+    target_store = data[target]
+    y_target = target_store.y
+    if y_target.dim() > 1:
+        y_target = y_target.argmax(dim=-1)
+    y_target = y_target.to(dtype=torch.long).view(-1)
+    y = torch.zeros(total_nodes, dtype=torch.long)
+    target_start = offsets[target]
+    target_stop = target_start + int(target_store.num_nodes)
+    y[target_start:target_stop] = y_target
+
+    masks = target_masks(
+        total_nodes,
+        target_start,
+        target_stop,
+        target_store,
+        cfg,
+    )
+    graph = Data(
+        x=x,
+        edge_index=torch.cat(edge_indices, dim=1).to(dtype=torch.int64),
+        y=y,
+        train_mask=masks["train"],
+        val_mask=masks["val"],
+        test_mask=masks["test"],
+        num_nodes=total_nodes,
+    ).to(device)
+    set_dynamic_cfg(cfg, graph)
+    return graph
+
+
+def hgb_dataset(
+    name: str,
+    root: Path,
+    _: Compose,
+    device: torch.device,
+    cfg: ConfigDict,
+) -> Dataset:
+    raw = pygds.HGBDataset(root=str(root), name=name)
+    graph = hetero_to_homogeneous(raw[0], cfg, device)
+    return SingleGraphDataset(graph)
+
+
+def imdb_dataset(
+    name: str,
+    root: Path,
+    _: Compose,
+    device: torch.device,
+    cfg: ConfigDict,
+) -> Dataset:
+    del name
+    raw = pygds.IMDB(root=str(root))
+    graph = hetero_to_homogeneous(raw[0], cfg, device)
+    return SingleGraphDataset(graph)
 
 
 LOADERS: dict[str, Loader] = {
@@ -227,12 +565,24 @@ LOADERS: dict[str, Loader] = {
     "Actor": actor,
     "Texas": webkb,
     "Wisconsin": webkb,
+    "AIFB": entity_dataset,
+    "MUTAG": entity_dataset,
+    "BGS": entity_dataset,
+    "DBLP": hgb_dataset,
+    "IMDB": imdb_dataset,
+    "ACM": hgb_dataset,
 }
 
 
-def load_ds(name: str, root: Path, tr: Compose, device: torch.device) -> Dataset:
+def load_ds(
+    name: str,
+    root: Path,
+    tr: Compose,
+    device: torch.device,
+    cfg: ConfigDict,
+) -> Dataset:
     try:
-        return LOADERS[name](name, root, tr, device)
+        return LOADERS[name](name, root, tr, device, cfg)
     except KeyError as exc:
         raise ValueError(f"Unsupported dataset: {name}") from exc
 
@@ -380,6 +730,8 @@ def edges(
 def add_mh(data: ConfigDict, model: ConfigDict, cfg: ConfigDict, device: torch.device) -> None:
     ds = copy(data.dataset)
     ds.edge_index = edges(data.dataset, model, cfg, device)
+    if isinstance(ds, SingleGraphDataset):
+        ds.graph.edge_index = ds.edge_index
     data.multihop_dataset = ds
 
 
@@ -404,7 +756,7 @@ def fetch_dataset(
     cfg = ds_cfg(config, ds_name)
 
     logger.info("Dataset loading...")
-    ds = load_ds(ds_name, root, transform(paths), config.device)
+    ds = load_ds(ds_name, root, transform(paths), config.device, cfg)
     logger.info("Dataset has been loaded successfully.")
 
     ensure_masks(ds, paths, cfg)

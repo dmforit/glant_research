@@ -76,7 +76,7 @@ def glant_config() -> ConfigDict:
     config.concat = False
 
     config.max_hops = 3
-    config.alpha = 0.6
+    config.alpha = 0.05
 
     config.dropout = 0.7
     config.attn_dropout = 0.7
@@ -99,7 +99,7 @@ def glant_config() -> ConfigDict:
 
     config.load_samples = False
     config.sampling_method = "balanced_unique_select"
-    config.num_samples = 50
+    config.num_samples = 15
 
     config.log_hop_diagnostics = True
     config.hop_log_every = 50

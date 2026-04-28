@@ -8,6 +8,17 @@ python main.py --dataset <DATASET> --train
 
 Поддерживаемые модели задаются в `config.baselines.names`.
 
+Поддерживаемые датасеты:
+
+```text
+Cora Pubmed Citeseer Computers Photo Actor Wisconsin Texas
+AIFB MUTAG BGS DBLP IMDB ACM
+```
+
+`AIFB`, `MUTAG`, `BGS`, `DBLP`, `IMDB`, `ACM` загружаются как
+гетерогенные датасеты и приводятся к homogeneous `Data` для текущей
+архитектуры node classification.
+
 Основные параметры:
 
 | Параметр                          | Значение                            |

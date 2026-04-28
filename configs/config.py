@@ -2,10 +2,16 @@ import torch
 from ml_collections import ConfigDict
 
 from configs.data_config import (
+    acm_config,
+    aifb_config,
     actor_config,
+    bgs_config,
     citeseer_config,
     computers_config,
     cora_config,
+    dblp_config,
+    imdb_config,
+    mutag_config,
     photo_config,
     pubmed_config,
     texas_config,
@@ -31,6 +37,12 @@ def all_config() -> ConfigDict:
     config.actor = actor_config()
     config.wisconsin = wisconsin_config()
     config.texas = texas_config()
+    config.aifb = aifb_config()
+    config.mutag = mutag_config()
+    config.bgs = bgs_config()
+    config.dblp = dblp_config()
+    config.imdb = imdb_config()
+    config.acm = acm_config()
 
     config.experiments = ConfigDict()
     config.experiments.runs = 20

@@ -1,105 +1,91 @@
 from ml_collections import ConfigDict
 
 
-def cora_config() -> ConfigDict:
+def base_data_config(
+    name: str,
+    in_channels: int | None = None,
+    out_channels: int | None = None,
+    num_nodes: int | None = None,
+) -> ConfigDict:
     config = ConfigDict()
-    config.name = "Cora"
-    config.in_channels = 1433
-    config.out_channels = 7
-    config.num_nodes = 2708
+    config.name = name
     config.save_path = "model_runs"
     config.metrics = ["Accuracy"]
     config.split_idx = 0
 
+    if in_channels is not None:
+        config.in_channels = in_channels
+    if out_channels is not None:
+        config.out_channels = out_channels
+    if num_nodes is not None:
+        config.num_nodes = num_nodes
+
     return config
+
+
+def cora_config() -> ConfigDict:
+    return base_data_config("Cora", 1433, 7, 2708)
 
 
 def pubmed_config() -> ConfigDict:
-    config = ConfigDict()
-    config.name = "PubMed"
-    config.in_channels = 500
-    config.out_channels = 3
-    config.num_nodes = 19717
-    config.save_path = "model_runs"
-    config.metrics = ["Accuracy"]
-    config.split_idx = 0
-
-    return config
+    return base_data_config("PubMed", 500, 3, 19717)
 
 
 def citeseer_config() -> ConfigDict:
-    config = ConfigDict()
-    config.name = "Citeseer"
-    config.in_channels = 3703
-    config.out_channels = 6
-    config.num_nodes = 3327
-    config.save_path = "model_runs"
-    config.metrics = ["Accuracy"]
-    config.split_idx = 0
-
-    return config
+    return base_data_config("Citeseer", 3703, 6, 3327)
 
 
 def computers_config() -> ConfigDict:
-    config = ConfigDict()
-    config.name = "Computers"
-    config.in_channels = 767
-    config.out_channels = 10
-    config.num_nodes = 13752
-    config.save_path = "model_runs"
-    config.metrics = ["Accuracy"]
-    config.split_idx = 0
-
-    return config
+    return base_data_config("Computers", 767, 10, 13752)
 
 
 def photo_config() -> ConfigDict:
-    config = ConfigDict()
-    config.name = "Photo"
-    config.in_channels = 745
-    config.out_channels = 8
-    config.num_nodes = 7650
-    config.save_path = "model_runs"
-    config.metrics = ["Accuracy"]
-    config.split_idx = 0
-
-    return config
+    return base_data_config("Photo", 745, 8, 7650)
 
 
 def actor_config() -> ConfigDict:
-    config = ConfigDict()
-    config.name = "Actor"
-    config.in_channels = 932
-    config.out_channels = 5
-    config.num_nodes = 7600
-    config.save_path = "model_runs"
-    config.metrics = ["Accuracy"]
-    config.split_idx = 0
-
-    return config
+    return base_data_config("Actor", 932, 5, 7600)
 
 
 def wisconsin_config() -> ConfigDict:
-    config = ConfigDict()
-    config.name = "Wisconsin"
-    config.in_channels = 1703
-    config.out_channels = 5
-    config.num_nodes = 251
-    config.save_path = "model_runs"
-    config.metrics = ["Accuracy"]
-    config.split_idx = 0
-
-    return config
+    return base_data_config("Wisconsin", 1703, 5, 251)
 
 
 def texas_config() -> ConfigDict:
-    config = ConfigDict()
-    config.name = "Texas"
-    config.in_channels = 1703
-    config.out_channels = 5
-    config.num_nodes = 183
-    config.save_path = "model_runs"
-    config.metrics = ["Accuracy"]
-    config.split_idx = 0
+    return base_data_config("Texas", 1703, 5, 183)
 
+
+def aifb_config() -> ConfigDict:
+    return base_data_config("AIFB", 1, 4, 8285)
+
+
+def mutag_config() -> ConfigDict:
+    return base_data_config("MUTAG", 1, 2, 23644)
+
+
+def bgs_config() -> ConfigDict:
+    return base_data_config("BGS", 1, 2, 333845)
+
+
+def dblp_config() -> ConfigDict:
+    config = base_data_config("DBLP")
+    config.target_node_type = "author"
+    config.hetero_source = "hgb"
+    config.hetero_to_homo_undirected = True
+    return config
+
+
+def imdb_config() -> ConfigDict:
+    config = base_data_config("IMDB")
+    config.target_node_type = "movie"
+    config.hetero_source = "pyg"
+    config.hetero_to_homo_undirected = True
+    return config
+
+
+def acm_config() -> ConfigDict:
+    config = base_data_config("ACM")
+    config.target_node_type = "paper"
+    config.hetero_source = "hgb"
+    config.hetero_to_homo_undirected = True
     return config
