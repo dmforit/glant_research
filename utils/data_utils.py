@@ -26,7 +26,11 @@ Paths: TypeAlias = dict[str, Path]
 
 SPLITS = ("train", "val", "test")
 WEBKB = frozenset({"Texas", "Wisconsin"})
-HOP_AWARE_CONVS = frozenset({"hop_gated_gatv2"})
+HOP_AWARE_CONVS = frozenset({
+    "hop_gated_gatv2",
+    "lambda_hop_gated_gatv2",
+    "hoga",
+})
 
 DS_CFG = {
     "Cora": "cora",

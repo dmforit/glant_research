@@ -28,6 +28,15 @@ def cfg_get(cfg: ConfigDict, name: str, default: Any = None) -> Any:
     return cfg[name] if name in cfg else default
 
 
+def cfg_bool(cfg: ConfigDict, name: str, default: bool = False) -> bool:
+    value = cfg_get(cfg, name, default)
+    if isinstance(value, str):
+        if value.lower() == "auto":
+            return default
+        return value.lower() in {"true", "1", "yes", "on"}
+    return bool(value)
+
+
 def as_edge_list(edge_index: EdgeInput) -> list[Tensor]:
     edges = [edge_index] if torch.is_tensor(edge_index) else list(edge_index)
 
@@ -213,6 +222,56 @@ class HopGatedGATv2Conv(nn.Module):
         for conv in self.convs[1:]:
             conv.lin_l = base.lin_l
             conv.lin_r = base.lin_r
+    
+    @staticmethod
+    def _attention_param(conv: GATv2Conv) -> Optional[Tensor]:
+        """Return hop-specific GATv2 attention parameter.
+
+        In most PyG versions GATv2Conv stores it as `att`.
+        The fallback names make this check more robust across versions.
+        """
+        for name in ("att", "att_l", "att_r"):
+            value = getattr(conv, name, None)
+            if torch.is_tensor(value):
+                return value
+        return None
+
+    def assert_hop_invariants(self) -> None:
+        """Check the intended hop-gated GLANT parameter structure.
+
+        Inside one GLANT layer:
+        - lin_l / W_l is shared between hops;
+        - lin_r / W_r is shared between hops;
+        - attention parameters are different between hops.
+        """
+        if not self.convs:
+            raise ValueError("HopGatedGATv2Conv has no hop convolutions")
+
+        base = self.convs[0]
+        base_lin_l = base.lin_l.weight
+        base_lin_r = base.lin_r.weight
+
+        att_params: list[Tensor] = []
+
+        for hop, conv in enumerate(self.convs):
+            if conv.lin_l.weight is not base_lin_l:
+                raise AssertionError(f"hop {hop}: lin_l.weight is not shared")
+
+            if conv.lin_r.weight is not base_lin_r:
+                raise AssertionError(f"hop {hop}: lin_r.weight is not shared")
+
+            att = self._attention_param(conv)
+            if att is None:
+                raise AssertionError(f"hop {hop}: attention parameter was not found")
+
+            att_params.append(att)
+
+        for left in range(len(att_params)):
+            for right in range(left + 1, len(att_params)):
+                if att_params[left] is att_params[right]:
+                    raise AssertionError(
+                        f"attention parameter is shared between hops {left} and {right}"
+                    )
 
     def reset_parameters(self) -> None:
         for conv in self.convs:
@@ -255,6 +314,7 @@ class HopGatedGATv2Conv(nn.Module):
         edge_index: EdgeInput,
         edge_attr: Optional[Tensor] = None,
         return_hop_diagnostics: bool = False,
+        return_attention_weights: bool = True,
     ) -> Tensor | tuple[Tensor, dict[str, Any]]:
         if edge_attr is not None and self.edge_dim is None:
             raise ValueError("edge_attr was provided, but edge_dim is None")
@@ -290,7 +350,7 @@ class HopGatedGATv2Conv(nn.Module):
                         "alpha": None,
                     })
             else:
-                if return_hop_diagnostics:
+                if return_hop_diagnostics and return_attention_weights:
                     msg, (att_edge_index, alpha) = self.convs[k](
                         x,
                         ei,
@@ -328,7 +388,10 @@ class HopGatedGATv2Conv(nn.Module):
             if return_hop_diagnostics:
                 diagnostics = {
                     "weights": weights.detach(),
+                    "hop_logits": logits.detach(),
                     "num_hops": num_hops,
+                    "messages_shape": list(messages_t.shape),
+                    "empty_hops": [bool(value) for value in empty_hops],
                     "attention": attention,
                 }
             if return_hop_diagnostics:
@@ -345,18 +408,416 @@ class HopGatedGATv2Conv(nn.Module):
         if return_hop_diagnostics:
             diagnostics = {
                 "weights": weights.detach(),
+                "hop_logits": logits.detach(),
                 "num_hops": num_hops,
+                "messages_shape": list(messages_t.shape),
+                "empty_hops": [bool(value) for value in empty_hops],
                 "attention": attention,
             }
 
         if return_hop_diagnostics:
             return out, diagnostics
         return out
+    
+
+class LambdaHopGatedGATv2Conv(nn.Module):
+    """GLANT-v2 layer.
+
+    Computes:
+        out = (1 - lambda_higher) * H_1 + lambda_higher * H_higher
+
+    where:
+        H_higher = sum_{k=2}^{K} beta_k(v) * H_k
+
+    Differences from HopGatedGATv2Conv / GLANT-v1:
+    - hop 1 is not part of the softmax gate;
+    - beta gate is normalized only over higher-order hops k >= 2;
+    - lambda_higher controls interpolation between 1-hop and higher-order part.
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        max_hops: int,
+        lambda_higher: float,
+        heads: int = 1,
+        concat: bool = False,
+        negative_slope: float = 0.2,
+        dropout: float = 0.0,
+        add_self_loops: bool = True,
+        edge_dim: Optional[int] = None,
+        fill_value: Union[float, Tensor, str] = "mean",
+        bias: bool = True,
+        residual: bool = False,
+        gate_hidden: Optional[int] = None,
+        gate_dropout: float = 0.0,
+        **kwargs,
+    ) -> None:
+        super().__init__()
+
+        if max_hops < 1:
+            raise ValueError("max_hops must be positive")
+        if not 0.0 <= float(lambda_higher) <= 1.0:
+            raise ValueError("lambda_higher must be in [0, 1]")
+        if gate_hidden is not None and gate_hidden < 1:
+            raise ValueError("gate_hidden must be positive or None")
+
+        self.max_hops = int(max_hops)
+        self.learn_lambda_higher = bool(kwargs.pop("learn_lambda_higher", False))
+
+        if self.learn_lambda_higher:
+            # sigmoid(-10) ≈ 0.000045, то есть практически старт с lambda = 0.
+            init = -10.0 if float(lambda_higher) <= 0.0 else math.log(
+                float(lambda_higher) / (1.0 - float(lambda_higher))
+            )
+            self.lambda_logit = nn.Parameter(torch.tensor(init, dtype=torch.float32))
+            self.lambda_higher = None
+        else:
+            self.lambda_logit = None
+            self.lambda_higher = float(lambda_higher)
+        self.edge_dim = edge_dim
+        self.out_dim = out_channels * heads if concat else out_channels
+
+        self.convs = nn.ModuleList([
+            GATv2Conv(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                heads=heads,
+                concat=concat,
+                negative_slope=negative_slope,
+                dropout=dropout,
+                add_self_loops=add_self_loops if k == 0 else False,
+                edge_dim=edge_dim if k == 0 else None,
+                fill_value=fill_value,
+                bias=bias,
+                residual=residual,
+                share_weights=False,
+                **kwargs,
+            )
+            for k in range(self.max_hops)
+        ])
+
+        self._share_left_right_projections()
+
+        num_higher_hops = max(self.max_hops - 1, 0)
+        self.higher_gate = None
+
+        if num_higher_hops > 0:
+            self.higher_gate = (
+                nn.Linear(in_channels, num_higher_hops)
+                if gate_hidden is None
+                else nn.Sequential(
+                    nn.Linear(in_channels, gate_hidden),
+                    nn.ReLU(),
+                    nn.Dropout(gate_dropout),
+                    nn.Linear(gate_hidden, num_higher_hops),
+                )
+            )
+            self._init_higher_gate_uniform()
+
+    def _share_left_right_projections(self) -> None:
+        base = self.convs[0]
+
+        for conv in self.convs[1:]:
+            conv.lin_l = base.lin_l
+            conv.lin_r = base.lin_r
+
+    def _lambda_value(self, x: Tensor) -> Tensor:
+        if self.lambda_logit is not None:
+            return torch.sigmoid(self.lambda_logit).to(device=x.device, dtype=x.dtype)
+
+        return x.new_tensor(float(self.lambda_higher))
+
+    @staticmethod
+    def _attention_param(conv: GATv2Conv) -> Optional[Tensor]:
+        for name in ("att", "att_l", "att_r"):
+            value = getattr(conv, name, None)
+            if torch.is_tensor(value):
+                return value
+        return None
+
+    def assert_hop_invariants(self) -> None:
+        if not self.convs:
+            raise ValueError("LambdaHopGatedGATv2Conv has no hop convolutions")
+
+        base = self.convs[0]
+        base_lin_l = base.lin_l.weight
+        base_lin_r = base.lin_r.weight
+
+        att_params: list[Tensor] = []
+
+        for hop, conv in enumerate(self.convs):
+            if conv.lin_l.weight is not base_lin_l:
+                raise AssertionError(f"hop {hop}: lin_l.weight is not shared")
+
+            if conv.lin_r.weight is not base_lin_r:
+                raise AssertionError(f"hop {hop}: lin_r.weight is not shared")
+
+            att = self._attention_param(conv)
+            if att is None:
+                raise AssertionError(f"hop {hop}: attention parameter was not found")
+
+            att_params.append(att)
+
+        for left in range(len(att_params)):
+            for right in range(left + 1, len(att_params)):
+                if att_params[left] is att_params[right]:
+                    raise AssertionError(
+                        f"attention parameter is shared between hops {left} and {right}"
+                    )
+
+    def reset_parameters(self) -> None:
+        for conv in self.convs:
+            conv.reset_parameters()
+
+        self._share_left_right_projections()
+        self._reset_higher_gate()
+        self._init_higher_gate_uniform()
+
+    def _reset_higher_gate(self) -> None:
+        if self.higher_gate is None:
+            return
+
+        if isinstance(self.higher_gate, nn.Linear):
+            self.higher_gate.reset_parameters()
+            return
+
+        for module in self.higher_gate:
+            if hasattr(module, "reset_parameters"):
+                module.reset_parameters()
+
+    def _init_higher_gate_uniform(self) -> None:
+        if self.higher_gate is None:
+            return
+
+        if isinstance(self.higher_gate, nn.Linear):
+            nn.init.zeros_(self.higher_gate.weight)
+            nn.init.zeros_(self.higher_gate.bias)
+            return
+
+        last = self.higher_gate[-1]
+        if not isinstance(last, nn.Linear):
+            raise TypeError("Last module of higher_gate must be nn.Linear")
+
+        nn.init.zeros_(last.weight)
+        nn.init.zeros_(last.bias)
+
+    @staticmethod
+    def _validate_edge_index(ei: Tensor, hop: int) -> None:
+        if ei.dim() != 2 or ei.size(0) != 2:
+            raise ValueError(f"edge_index at hop {hop} must have shape [2, num_edges]")
+
+    def _call_conv(
+        self,
+        hop: int,
+        x: Tensor,
+        ei: Tensor,
+        edge_attr: Optional[Tensor],
+        return_hop_diagnostics: bool,
+        return_attention_weights: bool,
+    ) -> tuple[Tensor, Optional[dict[str, Any]]]:
+        if ei.size(1) == 0 and hop > 0:
+            msg = x.new_zeros(x.size(0), self.out_dim)
+            att = None
+
+            if return_hop_diagnostics:
+                att = {
+                    "hop": hop,
+                    "att_edge_index": None,
+                    "alpha": None,
+                }
+
+            return msg, att
+
+        if return_hop_diagnostics and return_attention_weights:
+            msg, (att_edge_index, alpha) = self.convs[hop](
+                x,
+                ei,
+                edge_attr=edge_attr if hop == 0 else None,
+                return_attention_weights=True,
+            )
+            return msg, {
+                "hop": hop,
+                "att_edge_index": att_edge_index.detach(),
+                "alpha": alpha.detach(),
+            }
+
+        msg = self.convs[hop](
+            x,
+            ei,
+            edge_attr=edge_attr if hop == 0 else None,
+        )
+        return msg, None
+
+    def forward(
+        self,
+        x: Tensor,
+        edge_index: EdgeInput,
+        edge_attr: Optional[Tensor] = None,
+        return_hop_diagnostics: bool = False,
+        return_attention_weights: bool = True,
+    ) -> Tensor | tuple[Tensor, dict[str, Any]]:
+        if edge_attr is not None and self.edge_dim is None:
+            raise ValueError("edge_attr was provided, but edge_dim is None")
+
+        edges = [edge_index] if torch.is_tensor(edge_index) else list(edge_index)
+
+        if not edges:
+            raise ValueError("edge_index_list must be non-empty")
+        if len(edges) > self.max_hops:
+            raise ValueError("len(edge_index_list) exceeds max_hops")
+
+        num_nodes = x.size(0)
+        num_hops = len(edges)
+
+        for k, ei in enumerate(edges):
+            self._validate_edge_index(ei, k)
+
+        one_hop, one_hop_attention = self._call_conv(
+            hop=0,
+            x=x,
+            ei=edges[0],
+            edge_attr=edge_attr,
+            return_hop_diagnostics=return_hop_diagnostics,
+            return_attention_weights=return_attention_weights,
+        )
+
+        attention: list[dict[str, Any]] = []
+        if return_hop_diagnostics and one_hop_attention is not None:
+            attention.append(one_hop_attention)
+
+        # K=1: no higher-order part exists, so output is exactly H_1
+        # independently of lambda_higher.
+        if num_hops == 1:
+            diagnostics = None
+            if return_hop_diagnostics:
+                diagnostics = {
+                    "weights": None,
+                    "higher_logits": None,
+                    "num_hops": num_hops,
+                    "num_higher_hops": 0,
+                    "messages_shape": [num_nodes, 1, self.out_dim],
+                    "empty_hops": [False],
+                    "lambda_higher": float(self._lambda_value(x).detach().cpu().item()),
+                    "one_hop_weight": 1.0,
+                    "higher_order_weight": 0.0,
+                    "weight_hop_offset": 1,
+                    "attention": attention,
+                }
+                return one_hop, diagnostics
+
+            return one_hop
+
+        higher_messages: list[Tensor] = []
+        higher_attention: list[dict[str, Any]] = []
+        empty_higher_hops: list[bool] = []
+
+        # If lambda_higher == 0, still keep the code simple and compute diagnostics
+        # only when requested. The output is independent of these messages because
+        # their coefficient is exactly zero.
+        for k, ei in enumerate(edges[1:], start=1):
+            is_empty = ei.size(1) == 0
+            empty_higher_hops.append(is_empty)
+
+            msg, att = self._call_conv(
+                hop=k,
+                x=x,
+                ei=ei,
+                edge_attr=None,
+                return_hop_diagnostics=return_hop_diagnostics,
+                return_attention_weights=return_attention_weights,
+            )
+            higher_messages.append(msg)
+
+            if return_hop_diagnostics and att is not None:
+                higher_attention.append(att)
+
+        if return_hop_diagnostics:
+            attention.extend(higher_attention)
+
+        higher_messages_t = torch.stack(higher_messages, dim=1)
+        higher_logits = self.higher_gate(x)[:, : len(higher_messages)] # type: ignore
+
+        empty_t = torch.tensor(
+            empty_higher_hops,
+            device=x.device,
+            dtype=torch.bool,
+        )
+
+        if empty_t.all():
+            higher = x.new_zeros(num_nodes, self.out_dim)
+            higher_weights = x.new_zeros(num_nodes, len(higher_messages))
+
+            lambda_value = self._lambda_value(x)
+            one_hop_weight = 1.0 - lambda_value
+            higher_order_weight = lambda_value
+
+            out = one_hop_weight * one_hop + higher_order_weight * higher
+
+            lambda_float = float(lambda_value.detach().cpu().item())
+            one_hop_float = float(one_hop_weight.detach().cpu().item())
+            higher_float = float(higher_order_weight.detach().cpu().item())
+
+            diagnostics = None
+            if return_hop_diagnostics:
+                diagnostics = {
+                    "weights": higher_weights.detach(),
+                    "higher_logits": higher_logits.detach(),
+                    "num_hops": num_hops,
+                    "num_higher_hops": len(higher_messages),
+                    "messages_shape": list(higher_messages_t.shape),
+                    "empty_hops": [False] + [bool(value) for value in empty_higher_hops],
+                    "lambda_higher": lambda_float,
+                    "one_hop_weight": one_hop_float,
+                    "higher_order_weight": higher_float,
+                    "weight_hop_offset": 1,
+                    "attention": attention,
+                }
+                return out, diagnostics
+
+            return out
+
+        if empty_t.any():
+            higher_logits = higher_logits.masked_fill(empty_t.unsqueeze(0), float("-inf"))
+
+        higher_weights = torch.softmax(higher_logits, dim=-1)
+        higher = (higher_messages_t * higher_weights.unsqueeze(-1)).sum(dim=1)
+
+        lambda_value = self._lambda_value(x)
+        one_hop_weight = 1.0 - lambda_value
+        higher_order_weight = lambda_value
+
+        out = one_hop_weight * one_hop + higher_order_weight * higher
+
+        lambda_float = float(lambda_value.detach().cpu().item())
+        one_hop_float = float(one_hop_weight.detach().cpu().item())
+        higher_float = float(higher_order_weight.detach().cpu().item())
+
+        diagnostics = None
+        if return_hop_diagnostics:
+            diagnostics = {
+                "weights": higher_weights.detach(),
+                "higher_logits": higher_logits.detach(),
+                "num_hops": num_hops,
+                "num_higher_hops": len(higher_messages),
+                "messages_shape": list(higher_messages_t.shape),
+                "empty_hops": [False] + [bool(value) for value in empty_higher_hops],
+                "lambda_higher": float(lambda_value.detach().cpu().item()),
+                "one_hop_weight": one_hop_float,
+                "higher_order_weight": higher_float,
+                "weight_hop_offset": 1,
+                "attention": attention,
+            }
+
+            return out, diagnostics
+
+        return out
 
 
 class GLANT(nn.Module):
-    HOP_AWARE_CONVS = {"hop_gated_gatv2"}
-    EDGE_ATTR_CONVS = {"hop_gated_gatv2", "gatv2", "gat"}
+    HOP_AWARE_CONVS = {"hop_gated_gatv2", "lambda_hop_gated_gatv2"}
+    EDGE_ATTR_CONVS = {"hop_gated_gatv2", "lambda_hop_gated_gatv2", "gatv2", "gat"}
 
     def __init__(
         self,
@@ -536,6 +997,9 @@ class GLANT(nn.Module):
     ) -> nn.Module:
         if self.conv_type == "hop_gated_gatv2":
             return self._make_hop_gated_gatv2(in_channels, out_dim, is_last)
+        
+        if self.conv_type == "lambda_hop_gated_gatv2":
+            return self._make_lambda_hop_gated_gatv2(in_channels, out_dim, is_last)
 
         if self.conv_type == "gatv2":
             return self._make_gatv2(in_channels, out_dim, is_last)
@@ -568,6 +1032,28 @@ class GLANT(nn.Module):
         return HopGatedGATv2Conv(
             in_channels=in_channels,
             max_hops=self.max_hops,
+            negative_slope=float(cfg_get(self.model_config, "negative_slope", 0.2)),
+            dropout=self.attn_dropout,
+            add_self_loops=bool(cfg_get(self.model_config, "add_self_loops", True)),
+            edge_dim=self.edge_dim,
+            fill_value=cfg_get(self.model_config, "fill_value", "mean"),
+            bias=bool(cfg_get(self.model_config, "bias", True)),
+            residual=bool(cfg_get(self.model_config, "conv_residual", False)),
+            gate_hidden=cfg_get(self.model_config, "gate_hidden", None),
+            gate_dropout=float(cfg_get(self.model_config, "gate_dropout", 0.0)),
+            **self._attention_args(out_dim, is_last),
+        )
+
+    def _make_lambda_hop_gated_gatv2(
+        self,
+        in_channels: int,
+        out_dim: int,
+        is_last: bool,
+    ) -> nn.Module:
+        return LambdaHopGatedGATv2Conv(
+            in_channels=in_channels,
+            max_hops=self.max_hops,
+            lambda_higher=float(cfg_get(self.model_config, "lambda_higher", 0.5)),
             negative_slope=float(cfg_get(self.model_config, "negative_slope", 0.2)),
             dropout=self.attn_dropout,
             add_self_loops=bool(cfg_get(self.model_config, "add_self_loops", True)),
@@ -785,13 +1271,29 @@ class GLANT(nn.Module):
 
         return out
 
-    def _hop_gate_grad_norm(self, conv: HopGatedGATv2Conv) -> float:
+    @staticmethod
+    def _hop_gate_grad_norm(
+        conv: HopGatedGATv2Conv | LambdaHopGatedGATv2Conv,
+    ) -> Optional[float]:
+        gate = getattr(conv, "hop_gate", None)
+
+        if gate is None:
+            gate = getattr(conv, "higher_gate", None)
+
+        if gate is None:
+            return None
+
         total_sq = 0.0
 
-        for param in conv.hop_gate.parameters():
-            grad_norm = self._norm(param.grad)
-            if grad_norm is not None:
-                total_sq += grad_norm * grad_norm
+        for param in gate.parameters():
+            if param.grad is None:
+                continue
+
+            grad_norm = float(param.grad.detach().norm().item())
+            total_sq += grad_norm * grad_norm
+
+        if total_sq == 0.0:
+            return None
 
         return total_sq ** 0.5
 
@@ -805,11 +1307,24 @@ class GLANT(nn.Module):
         layer_id: int,
         lr: Optional[float],
     ) -> dict[str, Any]:
-        weights = diagnostics["weights"]
+        weights = diagnostics.get("weights")
         attention = diagnostics.get("attention", [])
         num_hops = int(diagnostics["num_hops"])
 
-        log_attention_metrics = phase in {"val", "test"}
+        hop_logits = diagnostics.get("hop_logits")
+        higher_logits = diagnostics.get("higher_logits")
+        messages_shape = diagnostics.get("messages_shape")
+        empty_hops = diagnostics.get("empty_hops")
+
+        lambda_higher = diagnostics.get("lambda_higher")
+        one_hop_weight = diagnostics.get("one_hop_weight")
+        higher_order_weight = diagnostics.get("higher_order_weight")
+        weight_hop_offset = int(diagnostics.get("weight_hop_offset", 0))
+
+        log_attention_metrics = (
+            phase in {"val", "test"}
+            and cfg_bool(self.model_config, "log_attention_statistics", True)
+        )
 
         attention_stats = []
         for item in attention:
@@ -839,10 +1354,26 @@ class GLANT(nn.Module):
             "layer_id": layer_id,
             "lr": lr,
             "num_hops": num_hops,
-            "weights_shape": list(weights.shape),
-            "weights_mean": self._tensor_list(weights.mean(dim=0)),
-            "weights_std": self._tensor_list(weights.std(dim=0, unbiased=False)),
+            "weights_shape": list(weights.shape) if weights is not None else None,
+            "weights_mean": (
+                self._tensor_list(weights.mean(dim=0))
+                if weights is not None
+                else None
+            ),
+            "weights_std": (
+                self._tensor_list(weights.std(dim=0, unbiased=False))
+                if weights is not None
+                else None
+            ),
+            "weight_hop_offset": weight_hop_offset,
             "attention": attention_stats,
+            "hop_logits_shape": list(hop_logits.shape) if hop_logits is not None else None,
+            "higher_logits_shape": list(higher_logits.shape) if higher_logits is not None else None,
+            "messages_shape": messages_shape,
+            "empty_hops": empty_hops,
+            "lambda_higher": lambda_higher,
+            "one_hop_weight": one_hop_weight,
+            "higher_order_weight": higher_order_weight,
         }
 
     @staticmethod
@@ -862,11 +1393,13 @@ class GLANT(nn.Module):
         row: dict[str, Any],
         prefix: str,
         values: Optional[list[Any]],
+        offset: int = 0,
     ) -> None:
         if values is None:
             return
+
         for idx, value in enumerate(values):
-            row[f"{prefix}_hop_{idx}"] = value
+            row[f"{prefix}_hop_{idx + offset}"] = value
 
     @staticmethod
     def _write_pretty_excel(csv_path: Path) -> None:
@@ -969,6 +1502,14 @@ class GLANT(nn.Module):
             "lr",
             "num_hops",
             "weights_shape",
+            "hop_logits_shape",
+            "higher_logits_shape",
+            "messages_shape",
+            "empty_hops",
+            "lambda_higher",
+            "one_hop_weight",
+            "higher_order_weight",
+            "weight_hop_offset",
             "grad_norm",
         ]
 
@@ -1008,11 +1549,46 @@ class GLANT(nn.Module):
                 if event.get("weights_shape") is not None
                 else None
             ),
+            "hop_logits_shape": (
+                json.dumps(event.get("hop_logits_shape"))
+                if event.get("hop_logits_shape") is not None
+                else None
+            ),
+            "higher_logits_shape": (
+                json.dumps(event.get("higher_logits_shape"))
+                if event.get("higher_logits_shape") is not None
+                else None
+            ),
+            "messages_shape": (
+                json.dumps(event.get("messages_shape"))
+                if event.get("messages_shape") is not None
+                else None
+            ),
+            "empty_hops": (
+                json.dumps(event.get("empty_hops"))
+                if event.get("empty_hops") is not None
+                else None
+            ),
+            "lambda_higher": event.get("lambda_higher"),
+            "one_hop_weight": event.get("one_hop_weight"),
+            "higher_order_weight": event.get("higher_order_weight"),
+            "weight_hop_offset": event.get("weight_hop_offset", 0),
             "grad_norm": event.get("grad_norm"),
         }
 
-        GLANT._flatten_hop_values(row, "weights_mean", event.get("weights_mean"))
-        GLANT._flatten_hop_values(row, "weights_std", event.get("weights_std"))
+        weight_hop_offset = int(event.get("weight_hop_offset", 0) or 0)
+        GLANT._flatten_hop_values(
+            row,
+            "weights_mean",
+            event.get("weights_mean"),
+            offset=weight_hop_offset,
+        )
+        GLANT._flatten_hop_values(
+            row,
+            "weights_std",
+            event.get("weights_std"),
+            offset=weight_hop_offset,
+        )
 
         for hop_item in event.get("attention", []) or []:
             hop = hop_item["hop"]
@@ -1059,7 +1635,7 @@ class GLANT(nn.Module):
         optimizer: Optional[Any] = None,
     ) -> None:
         for layer_id, conv in enumerate(self.convs):
-            if not isinstance(conv, HopGatedGATv2Conv):
+            if not isinstance(conv, (HopGatedGATv2Conv, LambdaHopGatedGATv2Conv)):
                 continue
 
             self._write_hop_diagnostics(
@@ -1071,6 +1647,17 @@ class GLANT(nn.Module):
                     "layer_id": layer_id,
                     "lr": self._lr(optimizer),
                     "num_hops": conv.max_hops,
+                    "lambda_higher": getattr(conv, "lambda_higher", None),
+                    "one_hop_weight": (
+                        1.0 - float(conv.lambda_higher)
+                        if hasattr(conv, "lambda_higher")
+                        else None
+                    ),
+                    "higher_order_weight": (
+                        float(conv.lambda_higher)
+                        if hasattr(conv, "lambda_higher")
+                        else None
+                    ),
                     "grad_norm": self._hop_gate_grad_norm(conv),
                 },
             )
@@ -1092,12 +1679,20 @@ class GLANT(nn.Module):
     ) -> Tensor | tuple[Tensor, dict[str, Any]]:
         ei: EdgeInput = edges if self.use_hops else edges[0]
 
-        if return_hop_diagnostics and isinstance(conv, HopGatedGATv2Conv):
+        if return_hop_diagnostics and isinstance(
+            conv,
+            (HopGatedGATv2Conv, LambdaHopGatedGATv2Conv),
+        ):
+            collect_attention = (
+                cfg_bool(self.model_config, "log_attention_scores", True)
+                or cfg_bool(self.model_config, "log_attention_statistics", True)
+            )
             return conv(
                 x,
                 ei,
                 edge_attr=edge_attr if edge_attr is not None and self.use_edge_attr else None,
                 return_hop_diagnostics=True,
+                return_attention_weights=collect_attention,
             )
 
         if edge_attr is not None and self.use_edge_attr:
@@ -1128,7 +1723,7 @@ class GLANT(nn.Module):
             is_last = i == len(self.convs) - 1
             want_hop_diagnostics = (
                 log_hop_diagnostics
-                and isinstance(conv, HopGatedGATv2Conv)
+                and isinstance(conv, (HopGatedGATv2Conv, LambdaHopGatedGATv2Conv))
                 and (log_only_layer is None or log_only_layer == i)
             )
 

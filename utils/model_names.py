@@ -4,10 +4,26 @@ from typing import Iterable, List
 
 
 MODEL_NAME_ALIASES = {
-    "glant": "GLANT",
+    "glant": "GLANT_v1",
+    "glant_v1": "GLANT_v1",
+    "glant-v1": "GLANT_v1",
+    "glant_v2": "GLANT_v2",
+    "glant-v2": "GLANT_v2",
     "gat": "GAT",
     "gatv2": "GATv2",
     "gcn": "GCN",
+    "graphsage": "GraphSAGE",
+    "sage": "GraphSAGE",
+    "mixhop": "MixHop",
+    "khop1": "MixHop",
+    "khop_model_1": "MixHop",
+    "k-hop baseline #1": "MixHop",
+    "tagconv": "TAGConv",
+    "tag": "TAGConv",
+    "khop2": "TAGConv",
+    "khop_model_2": "TAGConv",
+    "k-hop baseline #2": "TAGConv",
+    "hoga": "HoGA",
 }
 
 

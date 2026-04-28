@@ -11,11 +11,14 @@ import torch
 from torch import nn
 
 from configs.config import all_config
+from configs.ablation_config import apply_ablation
 from train import meta_train
 from utils.data_utils import ds_cfg, fetch_dataset
 from utils.logger import logger
 from utils.model_names import canonical_model_name, canonical_model_names
 from utils.model_utils import create_models, load_from_checkpoint
+from utils.run_paths import make_launch_id
+
 
 
 SUPPORTED_GPU_IDS = {0, 1}
@@ -39,6 +42,17 @@ def configure_device(config: Any, gpu: Optional[int]) -> None:
     config.device = torch.device(f"cuda:{gpu}")
 
 
+def configure_seed(config: Any, seed: Optional[int]) -> None:
+    if seed is None:
+        return
+
+    config.seed = int(seed)
+    torch.manual_seed(config.seed)
+    np.random.seed(config.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(config.seed)
+
+
 def model_args(values: List[str]) -> List[str]:
     """Flatten CLI model arguments, supporting spaces and comma-separated lists."""
     names: List[str] = []
@@ -50,6 +64,32 @@ def model_args(values: List[str]) -> List[str]:
 def apply_cli_overrides(config: Any, pargs: argparse.Namespace) -> None:
     if pargs.runs is not None:
         config.experiments.runs = pargs.runs
+
+    configure_seed(config, getattr(pargs, "seed", None))
+
+    if getattr(pargs, "run_mode", None) is not None:
+        config.run_mode = pargs.run_mode
+
+    if getattr(pargs, "results_dir", None) is not None:
+        config.results_dir = pargs.results_dir
+    
+    if getattr(pargs, "ablation", None) is not None:
+        apply_ablation(config, pargs.ablation)
+
+    if getattr(pargs, "lambda_higher", None) is not None:
+        config.baselines.GLANT_v2.lambda_higher = float(pargs.lambda_higher)
+        if "GLANT_v2" in config.baselines:
+            config.baselines.GLANT_v2.ablation_name = getattr(
+                config,
+                "ablation_name",
+                f"glant_v2_lambda_{str(pargs.lambda_higher).replace('.', '_')}",
+            )
+
+    if getattr(pargs, "save_best_model", False):
+        config.save_best_model = True
+    
+    if getattr(pargs, "launch_id", None) is not None:
+        config.launch_id = pargs.launch_id
 
     if pargs.model is not None:
         config.baselines.names = canonical_model_names(model_args(pargs.model))
@@ -133,6 +173,15 @@ def run_experiment(pargs: argparse.Namespace) -> Any:
     config = all_config()
     apply_cli_overrides(config, pargs)
 
+    if not hasattr(config, "launch_id") or config.launch_id is None:
+        config.launch_id = make_launch_id(
+            dataset_names=getattr(pargs, "dataset", None) or list(config.datasets.names),
+            mode="train" if pargs.train else "eval",
+            ablation_name=getattr(config, "ablation_name", None),
+        )
+
+    logger.info("launch_id: %s", config.launch_id)
+
     ds_config = ds_cfg(config, pargs.dataset)
     logger.info("Fetching Dataset: %s", pargs.dataset)
     data_dict = fetch_dataset(config, pargs.dataset)
@@ -177,19 +226,22 @@ def results_xlsx_filename(pargs: argparse.Namespace) -> str:
     datasets = "-".join(slug(dataset) for dataset in selected_datasets(pargs))
     model_names = selected_model_names(pargs)
     models = "-".join(slug(model) for model in model_names)
+    ablation = ""
+    if getattr(pargs, "ablation", None) is not None:
+        ablation = f"_ablation-{slug(pargs.ablation)}"
     glant_config = all_config().baselines.GLANT
     if pargs.conv_type is not None:
         glant_config.conv_type = pargs.conv_type
 
     architecture = ""
-    if "GLANT" in model_names and glant_config.conv_type == "hop_gated_gatv2":
+    if any(model in {"GLANT", "GLANT_v1"} for model in model_names) and glant_config.conv_type == "hop_gated_gatv2":
         architecture = f"_architecture-{slug(glant_config.architecture)}"
 
     mode = "train" if pargs.train else "test"
     runs = slug(pargs.runs if pargs.runs is not None else "config")
     timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
     filename = (
-        f"{mode}_datasets-{datasets}_models-{models}{architecture}_"
+        f"{mode}_datasets-{datasets}_models-{models}{architecture}{ablation}_"
         f"runs-{runs}_{timestamp}.xlsx"
     )
     return filename
@@ -437,10 +489,52 @@ if __name__ == "__main__":
         help="Override number of experiment repeats",
     )
     parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Set random seed for a run",
+    )
+    parser.add_argument(
         "--results-xlsx",
         type=str,
         default=None,
         help="Directory for generated summary XLSX files",
+    )
+    parser.add_argument(
+        "--results-dir",
+        type=str,
+        default=None,
+        help="Root directory for run-level results",
+    )
+    parser.add_argument(
+        "--run-mode",
+        type=str,
+        choices=["hpo", "final", "baseline", "debug"],
+        default=None,
+        help="Logging mode for run-level results",
+    )
+    parser.add_argument(
+        "--ablation",
+        type=str,
+        default=None,
+        help="Run one predefined GLANT ablation preset",
+    )
+    parser.add_argument(
+        "--lambda-higher",
+        type=float,
+        default=None,
+        help="Override GLANT-v2 lambda_higher",
+    )
+    parser.add_argument(
+        "--save-best-model",
+        action="store_true",
+        help="Also save best_model.pt under results/raw",
+    )
+    parser.add_argument(
+        "--launch-id",
+        type=str,
+        default=None,
+        help="Optional launch id for grouping all runs from one program launch",
     )
 
     mode = parser.add_mutually_exclusive_group(required=True)

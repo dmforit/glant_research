@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import secrets
 from copy import copy
 from itertools import product
 from pathlib import Path
@@ -19,10 +18,21 @@ from torch.optim.lr_scheduler import (
     StepLR,
 )
 
-from model import GLANT, HopEdgeSparsifier
+from model import HopEdgeSparsifier
 from utils.logger import logger
 from utils.model_names import canonical_model_name
 from utils.model_utils import save_to_checkpoint
+from utils.result_logging import (
+    config_bool,
+    export_glant_diagnostics,
+    is_glant_model,
+    raw_run_dir,
+    resolve_logging_policy,
+    run_seed,
+    set_random_seed,
+    write_config_json,
+    write_metrics_csv,
+)
 
 
 Masks = Dict[str, torch.Tensor]
@@ -30,7 +40,7 @@ ModelArgs = Dict[str, torch.Tensor]
 MetricCallables = Dict[str, Callable[[nn.Module, Any], float]]
 MetricHistory = Dict[str, Dict[str, List[float]]]
 
-HOP_AWARE_CONVS = {"hop_gated_gatv2"}
+HOP_AWARE_CONVS = {"hop_gated_gatv2", "lambda_hop_gated_gatv2", "hoga"}
 
 
 def select_mask_column(mask: torch.Tensor, split_idx: int = 0) -> torch.Tensor:
@@ -219,7 +229,7 @@ def get_val_loss(
     device: torch.device,
     *,
     log_hop_diagnostics: bool = False,
-    hop_log_path: str = "model_runs/logs/hop_weights",
+    hop_log_path: str = "",
     epoch: Optional[int] = None,
     lr: Optional[float] = None,
     log_only_layer: Optional[int] = None,
@@ -242,6 +252,27 @@ def get_val_loss(
     return val_loss
 
 
+def get_split_losses(
+    model: nn.Module,
+    data: Any,
+    loss: nn.Module,
+    device: torch.device,
+) -> Tuple[float, float, float]:
+    model.eval()
+    args, labels, masks = get_args(data, device)
+
+    with torch.no_grad():
+        pred = model(**args)
+        losses = []
+        for mask in masks.values():
+            if int(mask.sum()) == 0:
+                losses.append(float("nan"))
+            else:
+                losses.append(loss(pred[mask], labels[mask]).item())
+
+    return losses[0], losses[1], losses[2]
+
+
 def train_step_normal(
     model: nn.Module,
     optimiser: torch.optim.Optimizer,
@@ -250,7 +281,7 @@ def train_step_normal(
     loss_func: nn.Module,
     *,
     log_hop_diagnostics: bool = False,
-    hop_log_path: str = "model_runs/logs/hop_weights",
+    hop_log_path: str = "",
     epoch: Optional[int] = None,
     lr: Optional[float] = None,
     log_only_layer: Optional[int] = None,
@@ -290,7 +321,7 @@ def test(
     device: torch.device,
     *,
     log_hop_diagnostics: bool = False,
-    hop_log_path: str = "model_runs/logs/hop_weights",
+    hop_log_path: str = "",
     epoch: Optional[int] = None,
     lr: Optional[float] = None,
     log_only_layer: Optional[int] = None,
@@ -436,23 +467,6 @@ def hop_logging_configured(model_config: ConfigDict) -> bool:
     )
 
 
-def hop_log_root(model_config: ConfigDict) -> Path:
-    return Path(getattr(model_config, "hop_log_root", "./logs"))
-
-
-def resolve_hop_log_path(
-    *,
-    model_config: ConfigDict,
-    model_name: str,
-    dataset_name: str,
-    repeat_idx: int,
-) -> str:
-    root = hop_log_root(model_config)
-    log_dir = root / canonical_model_name(model_name) / dataset_name
-    suffix = secrets.token_hex(4)
-    return str(log_dir / f"run_{repeat_idx}_{suffix}")
-
-
 def write_hop_run_start(
     model_config: ConfigDict,
     path: str,
@@ -462,20 +476,6 @@ def write_hop_run_start(
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-
-
-def write_hop_run_xlsx(
-    model: nn.Module,
-    model_config: ConfigDict,
-    path: str,
-) -> None:
-    if not hop_logging_configured(model_config):
-        return
-
-    if hasattr(model, "write_hop_summary_xlsx"):
-        model.write_hop_summary_xlsx(path)
-    else:
-        GLANT.write_hop_summary_xlsx(path)
 
 
 def train_model(
@@ -490,23 +490,41 @@ def train_model(
     dataset_name: str,
     repeat_idx: int,
     do_save: bool = True,
+    full_config: Optional[ConfigDict] = None,
+    raw_dir: Optional[Path] = None,
+    seed: Optional[int] = None,
+    run_mode: str = "final",
 ) -> Tuple[List[float], List[float]]:
     optimiser = create_optimizer(model, model_config)
     scheduler = create_scheduler(optimiser, model_config)
-    path = ""
-    if hop_logging_configured(model_config):
-        path = resolve_hop_log_path(
+    if raw_dir is not None:
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        write_config_json(
+            config=full_config if full_config is not None else ConfigDict(),
             model_config=model_config,
             model_name=model_name,
             dataset_name=dataset_name,
-            repeat_idx=repeat_idx,
+            seed=int(seed if seed is not None else repeat_idx),
+            run_mode=run_mode,
+            path=raw_dir / "config.json",
         )
-    write_hop_run_start(model_config, path)
+    path = ""
+    if hop_logging_configured(model_config):
+        if raw_dir is None:
+            raise ValueError(
+                "GLANT hop diagnostics require raw_dir. "
+                "Pass raw_dir from meta_train/train loop."
+            )
 
-    best_val_acc = 0.0
+        path = str(raw_dir / "hop_diagnostics.csv")
+        write_hop_run_start(model_config, path)
+
+    best_val_acc = float("-inf")
     best_test_acc = 0.0
+    best_epoch = None
     train_losses: List[float] = []
     val_losses: List[float] = []
+    metrics_rows: List[Dict[str, Any]] = []
 
     model = model.to(device)
     for epoch in range(model_config.training.num_epochs):
@@ -552,11 +570,38 @@ def train_model(
             lr=current_lr,
             log_only_layer=only_layer,
         )
+        train_eval_loss, val_eval_loss, test_loss = get_split_losses(
+            model,
+            data,
+            loss,
+            device,
+        )
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             best_test_acc = test_acc
+            best_epoch = epoch
             if do_save:
                 save_to_checkpoint(model, str(save_dir))
+            if raw_dir is not None and bool(getattr(full_config, "save_best_model", False)):
+                torch.save(model, raw_dir / "best_model.pt")
+
+        metrics_rows.append({
+            "epoch": epoch,
+            "train_loss": train_loss,
+            "val_loss": val_loss,
+            "test_loss": test_loss,
+            "train_metric": train_acc,
+            "val_metric": val_acc,
+            "test_metric": test_acc,
+            "lr": current_lr,
+            "best_val_metric": best_val_acc,
+            "best_test_metric": best_test_acc,
+            "best_epoch": best_epoch,
+            "metric_name": "Accuracy",
+            "metric_direction": "higher",
+            "run_mode": run_mode,
+            "seed": seed if seed is not None else repeat_idx,
+        })
 
         should_log = (
             epoch % model_config.training.save_freq == 0
@@ -574,7 +619,17 @@ def train_model(
                 best_test_acc,
             )
 
-    write_hop_run_xlsx(model, model_config, path)
+    if raw_dir is not None:
+        write_metrics_csv(metrics_rows, raw_dir / "metrics.csv")
+
+        if is_glant_model(model_name, model_config):
+            export_glant_diagnostics(
+                hop_summary_path=path,
+                raw_dir=raw_dir,
+                write_attention=config_bool(
+                    getattr(model_config, "log_attention_statistics", False)
+                ),
+            )
 
     return train_losses, val_losses
 
@@ -650,6 +705,10 @@ def meta_train(
         models.items(),
     ):
         model_config = config.baselines[model_name]
+        current_seed = run_seed(config, repeat_idx)
+        set_random_seed(current_seed)
+        run_mode = str(getattr(config, "run_mode", "final")).lower()
+        resolve_logging_policy(model_name, model_config, run_mode)
 
         data = select_dataset_for_model(
             model_name=model_name,
@@ -669,6 +728,13 @@ def meta_train(
         run_dir.mkdir(parents=True, exist_ok=True)
 
         logger.info("Run: %s, Training model %s", repeat_idx, model_name)
+        raw_dir = raw_run_dir(
+            config,
+            model_name,
+            ds_config.name,
+            current_seed,
+            repeat_idx,
+        )
         train_loss, val_loss = train_model(
             model_config,
             model,
@@ -679,6 +745,10 @@ def meta_train(
             model_name=model_name,
             dataset_name=ds_config.name,
             repeat_idx=repeat_idx,
+            full_config=config,
+            raw_dir=raw_dir,
+            seed=current_seed,
+            run_mode=run_mode,
         )
         logger.info("Run: %s, Training completed", repeat_idx)
 

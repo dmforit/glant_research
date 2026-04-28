@@ -340,79 +340,95 @@ def balanced_unique_select(
     hop: int,
     device: torch.device,
 ) -> Tensor:
+    """Sample unique directed k-hop edges with balanced source coverage.
+
+    The implementation intentionally uses numpy's global RNG instead of
+    np.random.default_rng(), so project-level np.random.seed(...) controls
+    reproducibility.
+    """
     if hop <= 1:
         return edge_index
 
     if num_samples <= 0:
         return edge_index[:, :0]
 
-    max_samples = num_samples
+    max_samples = int(num_samples)
+
     if edge_index.shape[-1] < max_samples:
         edge_index = torch.empty(
             (2, max_samples),
             device=device,
             dtype=edge_index.dtype,
         )
-    rng = np.random.default_rng()
+
     progress_step = next_progress_step(max_samples)
     next_progress = progress_step
 
-    cand = []
-    for v in range(num_nodes):
-        ns = list(dict.fromkeys(map(int, hop_neighbours.get((hop, v), []))))
-        ns = [u for u in ns if u != v]
-        rng.shuffle(ns)
-        cand.append(ns)
+    candidates: list[list[int]] = []
+    for source in range(num_nodes):
+        neighbours = list(
+            dict.fromkeys(
+                int(target)
+                for target in hop_neighbours.get((hop, source), [])
+                if int(target) != source
+            )
+        )
+        np.random.shuffle(neighbours)
+        candidates.append(neighbours)
 
-    order = np.arange(num_nodes)
-    rng.shuffle(order)
+    source_order = np.arange(num_nodes)
+    np.random.shuffle(source_order)
 
-    seen = set()
+    seen: set[tuple[int, int]] = set()
     total = 0
 
-    def add_one(v: int) -> bool:
-        nonlocal next_progress, total
+    def add_one(source: int) -> bool:
+        nonlocal total, next_progress
 
-        while cand[v]:
-            u = cand[v].pop()
-            e = (v, u)
+        while candidates[source]:
+            target = candidates[source].pop()
+            edge = (source, target)
 
-            if e in seen:
+            if edge in seen:
                 continue
 
-            seen.add(e)
-            edge_index[0, total] = v
-            edge_index[1, total] = u
+            seen.add(edge)
+            edge_index[0, total] = source
+            edge_index[1, total] = target
             total += 1
+
             if total >= next_progress:
                 log_sampling_edges(
-                    'balanced_unique_select',
+                    "balanced_unique_select",
                     hop,
                     total,
                     max_samples,
                 )
                 next_progress += progress_step
+
             return True
 
         return False
 
-    for v in order:
+    # First pass: try to give each source node at least one sampled edge.
+    for source in source_order:
         if total >= max_samples:
             break
-        add_one(int(v))
+        add_one(int(source))
 
-    active = [int(v) for v in order if cand[int(v)]]
-    i = 0
+    # Round-robin over still-active source nodes until the budget is exhausted.
+    active = [int(source) for source in source_order if candidates[int(source)]]
+    idx = 0
 
     while total < max_samples and active:
-        v = active[i]
-        add_one(v)
+        source = active[idx]
+        add_one(source)
 
-        if not cand[v]:
-            active.pop(i)
+        if not candidates[source]:
+            active.pop(idx)
             if active:
-                i %= len(active)
+                idx %= len(active)
         else:
-            i = (i + 1) % len(active)
+            idx = (idx + 1) % len(active)
 
     return edge_index[:, :total]

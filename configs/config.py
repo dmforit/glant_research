@@ -21,7 +21,12 @@ from configs.model_config import (
     gat_config,
     gatv2_config,
     gcn_config,
+    graphsage_config,
     glant_config,
+    glant_v2_config,
+    hoga_config,
+    mixhop_config,
+    tagconv_config,
 )
 
 
@@ -47,11 +52,25 @@ def all_config() -> ConfigDict:
     config.experiments = ConfigDict()
     config.experiments.runs = 20
 
+    config.results_dir = "results"
+    config.save_best_model = False
+    config.collect_summary_after_training = False
+    config.run_mode = "final"
+    config.seed = 0
+
     config.baselines = ConfigDict()
-    config.baselines.names = ["GLANT", "GATv2"]
-    config.baselines.GLANT = glant_config()
+    config.baselines.names = ["GLANT_v1", "GLANT_v2", "GATv2"]
+    config.baselines.GLANT_v1 = glant_config()
+    config.baselines.GLANT = config.baselines.GLANT_v1
+    config.baselines.GLANT_v2 = glant_v2_config()
     config.baselines.GAT = gat_config()
     config.baselines.GATv2 = gatv2_config()
     config.baselines.GCN = gcn_config()
+    config.baselines.GraphSAGE = graphsage_config()
+    config.baselines.MixHop = mixhop_config()
+    config.baselines.TAGConv = tagconv_config()
+    config.baselines.khop_model_1 = config.baselines.MixHop
+    config.baselines.khop_model_2 = config.baselines.TAGConv
+    config.baselines.HoGA = hoga_config()
 
     return config

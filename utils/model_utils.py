@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 from ml_collections import ConfigDict
 
+from extra_models import HoGA, MixHopNet, TAGNet
 from model import GLANT
 from utils.logger import logger
 from utils.model_names import canonical_model_name, canonical_model_names
@@ -15,6 +16,11 @@ from utils.model_names import canonical_model_name, canonical_model_names
 
 Metrics = Dict[str, Dict[str, List[float]]]
 ModelRegistry = Dict[str, nn.Module]
+EXTRA_MODEL_TYPES = {
+    "MixHop": MixHopNet,
+    "TAGConv": TAGNet,
+    "HoGA": HoGA,
+}
 
 
 def load_from_checkpoint(
@@ -61,6 +67,7 @@ def save_to_checkpoint(model: nn.Module, save_dir: str) -> None:
 def get_baseline_config(config: ConfigDict, model_name: str) -> ConfigDict:
     """Return baseline config or fail with a clear message."""
     model_name = canonical_model_name(model_name)
+
     if model_name not in config.baselines:
         raise ValueError(f"Missing config for model: {model_name}")
 
@@ -87,7 +94,13 @@ def create_model(
     ds_config: ConfigDict,
 ) -> nn.Module:
     """Create one model by name."""
+    model_name = canonical_model_name(model_name)
     logger.info("Ds config (%s):\n%s", model_name, ds_config)
+    if model_name in EXTRA_MODEL_TYPES:
+        return EXTRA_MODEL_TYPES[model_name](
+            model_config=get_baseline_config(config, model_name),
+            ds_config=ds_config,
+        )
     return create_wrapped_model(model_name, config, ds_config)
 
 
