@@ -427,7 +427,7 @@ def export_attention_stats(df: pd.DataFrame, path: Path) -> None:
                 "epoch": source.get("epoch"),
                 "phase": source.get("phase"),
                 "layer_id": source.get("layer_id"),
-                "hop": int(hop) + 1,
+                "hop": int(hop),
                 "stat_name": prefix,
                 "stat_value": value,
             })

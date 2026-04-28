@@ -68,6 +68,7 @@ def make_config(lambda_higher: float, max_hops: int = 3) -> ConfigDict:
     cfg = all_config()
     cfg.device = torch.device("cpu")
     cfg.baselines.GLANT_v2.lambda_higher = lambda_higher
+    cfg.baselines.GLANT_v2.learn_lambda_higher = False
     cfg.baselines.GLANT_v2.max_hops = max_hops
     cfg.baselines.GLANT_v2.edge_dim = None
     return cfg
@@ -261,6 +262,35 @@ def check_lambda_one_formula() -> None:
     print("ok lambda=1 disables 1-hop coefficient")
 
 
+def check_learned_lambda_parameter() -> None:
+    torch.manual_seed(0)
+
+    ds_config = make_ds_config()
+    x = torch.randn(ds_config.num_nodes, ds_config.in_channels)
+    _, edge_index_list = make_edges()
+    cfg = make_config(lambda_higher=0.0, max_hops=3)
+    cfg.baselines.GLANT_v2.learn_lambda_higher = True
+
+    model = GLANT(cfg.baselines.GLANT_v2, ds_config)
+    first_layer = glant_v2_layers(model)[0]
+
+    if first_layer.lambda_logit is None:
+        raise AssertionError("learn_lambda_higher=True did not create lambda_logit")
+
+    lambda_value = torch.sigmoid(first_layer.lambda_logit.detach()).item()
+    if not 0.0 < lambda_value < 1.0:
+        raise AssertionError(f"learned lambda should be inside (0, 1), got {lambda_value}")
+
+    out = model(x=x, edge_index=edge_index_list, edge_attr=None)
+    loss = out.pow(2).mean()
+    loss.backward()
+
+    if first_layer.lambda_logit.grad is None:
+        raise AssertionError("lambda_logit did not receive a gradient")
+
+    print("ok learned lambda parameter receives gradient")
+
+
 def check_edge_attr_first_hop_only() -> None:
     torch.manual_seed(0)
 
@@ -300,6 +330,7 @@ def main() -> None:
     check_lambda_zero_independence()
     check_beta_normalization()
     check_lambda_one_formula()
+    check_learned_lambda_parameter()
     check_edge_attr_first_hop_only()
 
     print("All GLANT-v2 checks passed.")

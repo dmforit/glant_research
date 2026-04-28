@@ -137,7 +137,9 @@ def glant_v2_config() -> ConfigDict:
 
     # Main GLANT-v2 parameter:
     # out = (1 - lambda_higher) * H_1 + lambda_higher * H_higher
-    config.lambda_higher = 0.0
+    config.lambda_higher = 0.5
+    config.learn_lambda_higher = True
+    config.lambda_init_epsilon = 1e-3
 
     # Keep the same basic setup as GLANT-v1 for fair comparison.
     config.max_hops = 3

@@ -75,6 +75,7 @@ def apply_ablation(config: ConfigDict, ablation_name: str) -> ConfigDict:
             raise ValueError(f"lambda_higher must be in [0, 1], got {lambda_higher}")
 
         config.baselines.GLANT_v2.lambda_higher = lambda_higher
+        config.baselines.GLANT_v2.learn_lambda_higher = False
         config.baselines.GLANT_v2.ablation_name = str(preset["ablation_name"])
 
     if model_name == "GLANT_v1":

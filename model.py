@@ -465,12 +465,15 @@ class LambdaHopGatedGATv2Conv(nn.Module):
 
         self.max_hops = int(max_hops)
         self.learn_lambda_higher = bool(kwargs.pop("learn_lambda_higher", False))
+        lambda_init_epsilon = float(kwargs.pop("lambda_init_epsilon", 1e-3))
 
         if self.learn_lambda_higher:
-            # sigmoid(-10) ≈ 0.000045, то есть практически старт с lambda = 0.
-            init = -10.0 if float(lambda_higher) <= 0.0 else math.log(
-                float(lambda_higher) / (1.0 - float(lambda_higher))
+            lambda_init_epsilon = min(max(lambda_init_epsilon, 1e-8), 0.5)
+            init_lambda = min(
+                max(float(lambda_higher), lambda_init_epsilon),
+                1.0 - lambda_init_epsilon,
             )
+            init = math.log(init_lambda / (1.0 - init_lambda))
             self.lambda_logit = nn.Parameter(torch.tensor(init, dtype=torch.float32))
             self.lambda_higher = None
         else:
@@ -703,6 +706,7 @@ class LambdaHopGatedGATv2Conv(nn.Module):
                     "one_hop_weight": 1.0,
                     "higher_order_weight": 0.0,
                     "weight_hop_offset": 1,
+                    "attention_hop_offset": 1,
                     "attention": attention,
                 }
                 return one_hop, diagnostics
@@ -772,6 +776,7 @@ class LambdaHopGatedGATv2Conv(nn.Module):
                     "one_hop_weight": one_hop_float,
                     "higher_order_weight": higher_float,
                     "weight_hop_offset": 1,
+                    "attention_hop_offset": 1,
                     "attention": attention,
                 }
                 return out, diagnostics
@@ -807,6 +812,7 @@ class LambdaHopGatedGATv2Conv(nn.Module):
                 "one_hop_weight": one_hop_float,
                 "higher_order_weight": higher_float,
                 "weight_hop_offset": 1,
+                "attention_hop_offset": 1,
                 "attention": attention,
             }
 
@@ -1054,6 +1060,8 @@ class GLANT(nn.Module):
             in_channels=in_channels,
             max_hops=self.max_hops,
             lambda_higher=float(cfg_get(self.model_config, "lambda_higher", 0.5)),
+            learn_lambda_higher=bool(cfg_get(self.model_config, "learn_lambda_higher", False)),
+            lambda_init_epsilon=float(cfg_get(self.model_config, "lambda_init_epsilon", 1e-3)),
             negative_slope=float(cfg_get(self.model_config, "negative_slope", 0.2)),
             dropout=self.attn_dropout,
             add_self_loops=bool(cfg_get(self.model_config, "add_self_loops", True)),
@@ -1179,6 +1187,30 @@ class GLANT(nn.Module):
         return float(optimizer.param_groups[0]["lr"])
 
     @staticmethod
+    def _lambda_float(
+        conv: HopGatedGATv2Conv | LambdaHopGatedGATv2Conv,
+    ) -> Optional[float]:
+        lambda_logit = getattr(conv, "lambda_logit", None)
+        if lambda_logit is not None:
+            return float(torch.sigmoid(lambda_logit.detach()).cpu().item())
+
+        lambda_higher = getattr(conv, "lambda_higher", None)
+        if lambda_higher is None:
+            return None
+
+        return float(lambda_higher)
+
+    @staticmethod
+    def _lambda_grad_norm(
+        conv: HopGatedGATv2Conv | LambdaHopGatedGATv2Conv,
+    ) -> Optional[float]:
+        lambda_logit = getattr(conv, "lambda_logit", None)
+        if lambda_logit is None or lambda_logit.grad is None:
+            return None
+
+        return float(lambda_logit.grad.detach().norm().cpu().item())
+
+    @staticmethod
     def _attention_norm_entropy_mean(
         att_edge_index: Optional[Tensor],
         alpha: Optional[Tensor],
@@ -1299,7 +1331,7 @@ class GLANT(nn.Module):
 
     def _summarize_hop_diagnostics(
         self,
-        conv: HopGatedGATv2Conv,
+        conv: HopGatedGATv2Conv | LambdaHopGatedGATv2Conv,
         diagnostics: dict[str, Any],
         *,
         epoch: Optional[int],
@@ -1320,6 +1352,7 @@ class GLANT(nn.Module):
         one_hop_weight = diagnostics.get("one_hop_weight")
         higher_order_weight = diagnostics.get("higher_order_weight")
         weight_hop_offset = int(diagnostics.get("weight_hop_offset", 0))
+        attention_hop_offset = int(diagnostics.get("attention_hop_offset", 0))
 
         log_attention_metrics = (
             phase in {"val", "test"}
@@ -1339,7 +1372,7 @@ class GLANT(nn.Module):
                 alpha=item.get("alpha"),
             )
             attention_stats.append({
-                "hop": item["hop"],
+                "hop": item["hop"] + attention_hop_offset,
                 "attention_norm_entropy_mean": self._attention_norm_entropy_mean(
                     item.get("att_edge_index"),
                     item.get("alpha"),
@@ -1493,7 +1526,7 @@ class GLANT(nn.Module):
         wb.save(xlsx_path)
 
     @staticmethod
-    def _summary_fieldnames(num_hops: int) -> list[str]:
+    def _summary_fieldnames(num_hop_fields: int) -> list[str]:
         fields = [
             "event",
             "epoch",
@@ -1511,15 +1544,16 @@ class GLANT(nn.Module):
             "higher_order_weight",
             "weight_hop_offset",
             "grad_norm",
+            "lambda_grad_norm",
         ]
 
-        for hop in range(num_hops):
+        for hop in range(num_hop_fields):
             fields.append(f"weights_mean_hop_{hop}")
 
-        for hop in range(num_hops):
+        for hop in range(num_hop_fields):
             fields.append(f"weights_std_hop_{hop}")
 
-        for hop in range(num_hops):
+        for hop in range(num_hop_fields):
             fields.extend([
                 f"attention_norm_entropy_mean_hop_{hop}",
                 f"attention_mae_from_baseline_hop_{hop}",
@@ -1535,7 +1569,17 @@ class GLANT(nn.Module):
         summary_path.parent.mkdir(parents=True, exist_ok=True)
 
         num_hops = int(event.get("num_hops") or 0)
-        fieldnames = GLANT._summary_fieldnames(num_hops)
+        max_hop_id = max(num_hops - 1, 0)
+        weight_hop_offset = int(event.get("weight_hop_offset", 0) or 0)
+
+        weights_mean = event.get("weights_mean")
+        if weights_mean:
+            max_hop_id = max(max_hop_id, weight_hop_offset + len(weights_mean) - 1)
+
+        for hop_item in event.get("attention", []) or []:
+            max_hop_id = max(max_hop_id, int(hop_item["hop"]))
+
+        fieldnames = GLANT._summary_fieldnames(max_hop_id + 1)
 
         row = {
             "event": event.get("event"),
@@ -1574,9 +1618,9 @@ class GLANT(nn.Module):
             "higher_order_weight": event.get("higher_order_weight"),
             "weight_hop_offset": event.get("weight_hop_offset", 0),
             "grad_norm": event.get("grad_norm"),
+            "lambda_grad_norm": event.get("lambda_grad_norm"),
         }
 
-        weight_hop_offset = int(event.get("weight_hop_offset", 0) or 0)
         GLANT._flatten_hop_values(
             row,
             "weights_mean",
@@ -1606,19 +1650,65 @@ class GLANT(nn.Module):
                 "attention_cosine_to_baseline"
             )
 
+        GLANT._append_hop_summary_row(summary_path, fieldnames, row)
+
+    @staticmethod
+    def _append_hop_summary_row(
+        summary_path: Path,
+        fieldnames: list[str],
+        row: dict[str, Any],
+    ) -> None:
         file_exists = summary_path.exists() and summary_path.stat().st_size > 0
 
-        with summary_path.open("a", encoding="utf-8", newline="") as writer_file:
+        if not file_exists:
+            with summary_path.open("w", encoding="utf-8", newline="") as writer_file:
+                writer = csv.DictWriter(
+                    writer_file,
+                    fieldnames=fieldnames,
+                    extrasaction="ignore",
+                )
+                writer.writeheader()
+                writer.writerow(row)
+            return
+
+        with summary_path.open("r", encoding="utf-8", newline="") as reader_file:
+            reader = csv.DictReader(reader_file)
+            existing_fieldnames = list(reader.fieldnames or [])
+
+            rows = []
+            has_malformed_rows = False
+            for existing_row in reader:
+                if None in existing_row:
+                    has_malformed_rows = True
+                    existing_row.pop(None, None)
+                rows.append(existing_row)
+
+        has_new_fields = any(field not in existing_fieldnames for field in fieldnames)
+
+        if not has_new_fields and not has_malformed_rows:
+            with summary_path.open("a", encoding="utf-8", newline="") as writer_file:
+                writer = csv.DictWriter(
+                    writer_file,
+                    fieldnames=existing_fieldnames,
+                    extrasaction="ignore",
+                )
+                writer.writerow(row)
+            return
+
+        merged_fieldnames = existing_fieldnames + [
+            field for field in fieldnames if field not in existing_fieldnames
+        ]
+        rows.append(row)
+
+        with summary_path.open("w", encoding="utf-8", newline="") as writer_file:
             writer = csv.DictWriter(
                 writer_file,
-                fieldnames=fieldnames,
+                fieldnames=merged_fieldnames,
                 extrasaction="ignore",
             )
-
-            if not file_exists:
-                writer.writeheader()
-
-            writer.writerow(row)
+            writer.writeheader()
+            for existing_row in rows:
+                writer.writerow(existing_row)
 
     @staticmethod
     def write_hop_summary_xlsx(path: str | Path) -> None:
@@ -1638,6 +1728,7 @@ class GLANT(nn.Module):
             if not isinstance(conv, (HopGatedGATv2Conv, LambdaHopGatedGATv2Conv)):
                 continue
 
+            lambda_higher = self._lambda_float(conv)
             self._write_hop_diagnostics(
                 path,
                 {
@@ -1647,18 +1738,15 @@ class GLANT(nn.Module):
                     "layer_id": layer_id,
                     "lr": self._lr(optimizer),
                     "num_hops": conv.max_hops,
-                    "lambda_higher": getattr(conv, "lambda_higher", None),
+                    "lambda_higher": lambda_higher,
                     "one_hop_weight": (
-                        1.0 - float(conv.lambda_higher)
-                        if hasattr(conv, "lambda_higher")
+                        1.0 - lambda_higher
+                        if lambda_higher is not None
                         else None
                     ),
-                    "higher_order_weight": (
-                        float(conv.lambda_higher)
-                        if hasattr(conv, "lambda_higher")
-                        else None
-                    ),
+                    "higher_order_weight": lambda_higher,
                     "grad_norm": self._hop_gate_grad_norm(conv),
+                    "lambda_grad_norm": self._lambda_grad_norm(conv),
                 },
             )
 
