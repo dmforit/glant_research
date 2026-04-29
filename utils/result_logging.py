@@ -25,8 +25,34 @@ def is_glant_model(model_name: str, model_config: ConfigDict) -> bool:
     canonical = canonical_model_name(model_name)
     conv_type = str(getattr(model_config, "conv_type", "")).lower()
     return (
-        canonical in {"GLANT", "GLANT_v1", "GLANT_v2"}
-        or conv_type in {"hop_gated_gatv2", "lambda_hop_gated_gatv2"}
+        canonical in {
+            "GLANT",
+            "GLANT_v1",
+            "GLANT_v2",
+            "GLANT_v3",
+            "GLANT_v4",
+            "GLANT_v5",
+            "GLANT_v6",
+            "GLANT_v6p1",
+            "GLANT_v7",
+        }
+        or conv_type in {
+            "hop_gated_gatv2",
+            "lambda_hop_gated_gatv2",
+            "glant_v3",
+            "glantv3",
+            "glant_v4",
+            "glantv4",
+            "glant_v5",
+            "glantv5",
+            "glant_v6",
+            "glantv6",
+            "glant_v6p1",
+            "glantv6p1",
+            "glant_v6_p1",
+            "glant_v7",
+            "glantv7",
+        }
     )
 
 
@@ -363,7 +389,11 @@ def _summary_path(path: Path) -> Path:
 def export_hop_weights(df: pd.DataFrame, path: Path) -> None:
     weight_cols = [
         col for col in df.columns
-        if col.startswith("weights_mean_hop_") or col.startswith("weights_std_hop_")
+        if (
+            col.startswith("weights_mean_hop_")
+            or col.startswith("weights_std_hop_")
+            or col.startswith("hop_scalar_hop_")
+        )
     ]
 
     extra_cols = [
@@ -372,10 +402,13 @@ def export_hop_weights(df: pd.DataFrame, path: Path) -> None:
             "one_hop_weight",
             "higher_order_weight",
             "weights_shape",
+            "edge_hops",
+            "branch_names",
             "hop_logits_shape",
             "higher_logits_shape",
             "messages_shape",
             "empty_hops",
+            "hop_scalars",
         ]
         if col in df.columns
     ]

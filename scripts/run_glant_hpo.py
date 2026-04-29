@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import argparse
 import copy
-import itertools
 import json
 import sys
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import optuna
 import torch
 from torch import nn
 
@@ -27,18 +27,33 @@ from utils.run_paths import make_launch_id
 
 
 DEFAULT_DATASETS = ["Cora", "Citeseer", "Texas", "AIFB", "IMDB", "ACM"]
-DEFAULT_MODELS = ["glant_v1", "glant_v2"]
+DEFAULT_MODELS = [
+    "glant_v1",
+    "glant_v2",
+    "glant_v3",
+    "glant_v4",
+    "glant_v5",
+    "glant_v6",
+    "glant_v6p1",
+    "glant_v7",
+]
 DEFAULT_TRIALS = {
     "GLANT_v1": 10,
     "GLANT_v2": 20,
+    "GLANT_v3": 10,
+    "GLANT_v4": 10,
+    "GLANT_v5": 10,
+    "GLANT_v6": 10,
+    "GLANT_v6p1": 10,
+    "GLANT_v7": 10,
 }
 
 
 SEARCH_SPACE = {
     "GLANT_v1": {
-        "max_hops": [2, 3, 4],
+        "max_hops": [2, 3],
         "alpha": [0.03, 0.05, 0.1, 0.3, 0.5, 0.75, 1.0],
-        "num_edges": [10000, 25000, 50000, 75000],
+        "num_edges": [10000, 25000],
         "num_layers": [2, 3, 4],
         "hidden_channels": [32, 64],
         "heads": [4, 8],
@@ -46,9 +61,9 @@ SEARCH_SPACE = {
         "norm": ["none", "layernorm"],
     },
     "GLANT_v2": {
-        "max_hops": [2, 3, 4],
+        "max_hops": [2, 3],
         "alpha": [0.03, 0.05, 0.1, 0.3, 0.5, 0.75, 1.0],
-        "num_edges": [10000, 25000, 50000, 75000],
+        "num_edges": [10000, 25000],
         "num_layers": [2, 3, 4],
         "hidden_channels": [32, 64],
         "heads": [4, 8],
@@ -56,6 +71,29 @@ SEARCH_SPACE = {
         "norm": ["none", "layernorm"],
         "lambda_higher": [0.0, 0.1, 0.25, 0.5, 1.0],
     },
+}
+for _model_name in ("GLANT_v3", "GLANT_v4", "GLANT_v5", "GLANT_v6", "GLANT_v6p1"):
+    SEARCH_SPACE[_model_name] = SEARCH_SPACE["GLANT_v1"]
+SEARCH_SPACE["GLANT_v7"] = {
+    "max_hops": [2],
+    "alpha": [1.0],
+    "num_edges": [15000, 20000, 30000, 40000],
+    "sample_pool_edges": [40000],
+    "num_layers": [2],
+    "v7_num_banks": [2],
+    "v7_input_skip": [False],
+    "v7_gate_mode": ["scalar", "node"],
+    "hidden_channels": [32, 48, 64, 96],
+    "heads": [2, 4, 8],
+    "dropout": [0.5, 0.55, 0.6, 0.65, 0.7],
+    "attn_dropout": [0.45, 0.5, 0.55, 0.6],
+    "norm": ["layernorm"],
+    "branch_norm": ["none"],
+    "act": ["elu", "relu"],
+    "lr": [0.002, 0.003, 0.004, 0.005],
+    "root_scalar_init": [0.9, 0.95],
+    "hop_scalar_profile": ["one_hop_strong", "balanced", "front_loaded"],
+    "weight_decay": [1e-3, 1.5e-3, 2e-3, 3e-3, 5e-3],
 }
 
 
@@ -75,8 +113,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--gpu", type=int, default=-1)
     parser.add_argument("--epochs", type=int, default=None)
+    parser.add_argument(
+        "--fixed-trial-seed",
+        action="store_true",
+        help="Use --seed for every trial instead of seed + trial_id.",
+    )
     parser.add_argument("--trials-v1", type=int, default=DEFAULT_TRIALS["GLANT_v1"])
     parser.add_argument("--trials-v2", type=int, default=DEFAULT_TRIALS["GLANT_v2"])
+    parser.add_argument("--trials-v3", type=int, default=DEFAULT_TRIALS["GLANT_v3"])
+    parser.add_argument("--trials-v4", type=int, default=DEFAULT_TRIALS["GLANT_v4"])
+    parser.add_argument("--trials-v5", type=int, default=DEFAULT_TRIALS["GLANT_v5"])
+    parser.add_argument("--trials-v6", type=int, default=DEFAULT_TRIALS["GLANT_v6"])
+    parser.add_argument("--trials-v6p1", type=int, default=DEFAULT_TRIALS["GLANT_v6p1"])
+    parser.add_argument("--trials-v7", type=int, default=DEFAULT_TRIALS["GLANT_v7"])
     parser.add_argument("--trial-limit", type=int, default=None)
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
@@ -96,25 +145,27 @@ def trial_count(model_name: str, args: argparse.Namespace) -> int:
         return int(args.trials_v1)
     if model_name == "GLANT_v2":
         return int(args.trials_v2)
-    raise ValueError(f"HPO supports only GLANT_v1 and GLANT_v2, got {model_name}")
+    if model_name == "GLANT_v3":
+        return int(args.trials_v3)
+    if model_name == "GLANT_v4":
+        return int(args.trials_v4)
+    if model_name == "GLANT_v5":
+        return int(args.trials_v5)
+    if model_name == "GLANT_v6":
+        return int(args.trials_v6)
+    if model_name == "GLANT_v6p1":
+        return int(args.trials_v6p1)
+    if model_name == "GLANT_v7":
+        return int(args.trials_v7)
+    raise ValueError(f"HPO supports only GLANT_v1..GLANT_v7, got {model_name}")
 
 
-def all_param_combinations(model_name: str) -> list[dict[str, Any]]:
+def suggest_params(trial: optuna.Trial, model_name: str) -> dict[str, Any]:
     space = SEARCH_SPACE[model_name]
-    keys = list(space)
-    values = [space[key] for key in keys]
-    return [
-        dict(zip(keys, combo))
-        for combo in itertools.product(*values)
-    ]
-
-
-def selected_trials(model_name: str, count: int, seed: int) -> list[dict[str, Any]]:
-    combinations = all_param_combinations(model_name)
-    generator = torch.Generator()
-    generator.manual_seed(seed)
-    order = torch.randperm(len(combinations), generator=generator).tolist()
-    return [combinations[idx] for idx in order[: min(count, len(combinations))]]
+    params: dict[str, Any] = {}
+    for name, values in space.items():
+        params[name] = trial.suggest_categorical(name, values)
+    return params
 
 
 def apply_trial_params(config: Any, model_name: str, params: dict[str, Any]) -> None:
@@ -123,16 +174,37 @@ def apply_trial_params(config: Any, model_name: str, params: dict[str, Any]) -> 
     model_config.max_hops = int(params["max_hops"])
     model_config.alpha = float(params["alpha"])
     model_config.num_edges = int(params["num_edges"])
+    if "sample_pool_edges" in params:
+        model_config.sample_pool_edges = int(params["sample_pool_edges"])
     model_config.num_layers = int(params["num_layers"])
     model_config.hidden_channels = int(params["hidden_channels"])
     model_config.heads = int(params["heads"])
     model_config.dropout = float(params["dropout"])
-    model_config.attn_dropout = float(params["dropout"])
+    model_config.attn_dropout = float(params.get("attn_dropout", params["dropout"]))
     model_config.norm = str(params["norm"])
+    if "act" in params:
+        model_config.act = str(params["act"])
 
     if model_name == "GLANT_v2":
         model_config.lambda_higher = float(params["lambda_higher"])
         model_config.learn_lambda_higher = False
+
+    if model_name == "GLANT_v7":
+        model_config.branch_norm = str(params["branch_norm"])
+        model_config.v7_num_banks = int(params["v7_num_banks"])
+        model_config.v7_input_skip = bool(params["v7_input_skip"])
+        model_config.v7_gate_mode = str(params["v7_gate_mode"])
+        model_config.hop_mode = "edge_hop"
+        model_config.root_scalar_init = float(params["root_scalar_init"])
+        hop_profiles = {
+            "front_loaded": [0.9, 0.7, 0.45],
+            "balanced": [0.8, 0.8, 0.6],
+            "one_hop_strong": [0.95, 0.5, 0.25],
+            "low_high_hops": [0.95, 0.25, 0.1],
+        }
+        model_config.hop_scalar_init = hop_profiles[str(params["hop_scalar_profile"])]
+        model_config.training.lr = float(params["lr"])
+        model_config.training.weight_decay = float(params["weight_decay"])
 
 
 def hpo_summary_dir(results_dir: str | Path, launch_id: str) -> Path:
@@ -158,6 +230,23 @@ def write_hpo_results(rows: list[dict[str, Any]], results_dir: str | Path, launc
             ignore_index=True,
         )
     df.to_csv(root_path, index=False)
+
+
+def write_optuna_trials(
+    study: optuna.Study,
+    *,
+    results_dir: str | Path,
+    launch_id: str,
+    dataset_name: str,
+    model_name: str,
+) -> None:
+    summary_dir = hpo_summary_dir(results_dir, launch_id)
+    summary_dir.mkdir(parents=True, exist_ok=True)
+    path = summary_dir / f"optuna_trials_{dataset_name}_{model_name}.csv"
+    study.trials_dataframe(attrs=("number", "value", "state", "params", "user_attrs")).to_csv(
+        path,
+        index=False,
+    )
 
 
 def write_best_configs(rows: list[dict[str, Any]], results_dir: str | Path, launch_id: str) -> None:
@@ -363,7 +452,16 @@ def main() -> None:
     base_config.run_mode = "hpo"
 
     if args.epochs is not None:
-        for model_name in ("GLANT_v1", "GLANT_v2"):
+        for model_name in (
+            "GLANT_v1",
+            "GLANT_v2",
+            "GLANT_v3",
+            "GLANT_v4",
+            "GLANT_v5",
+            "GLANT_v6",
+            "GLANT_v6p1",
+            "GLANT_v7",
+        ):
             getattr(base_config.baselines, model_name).training.num_epochs = int(args.epochs)
 
     launch_id = args.launch_id or make_launch_id(
@@ -383,17 +481,30 @@ def main() -> None:
             )
 
         for model_name in model_names:
-            if model_name not in {"GLANT_v1", "GLANT_v2"}:
-                raise ValueError(f"HPO supports only GLANT_v1/GLANT_v2, got {model_name}")
+            if model_name not in {
+                "GLANT_v1",
+                "GLANT_v2",
+                "GLANT_v3",
+                "GLANT_v4",
+                "GLANT_v5",
+                "GLANT_v6",
+                "GLANT_v6p1",
+                "GLANT_v7",
+            }:
+                raise ValueError(f"HPO supports only GLANT_v1..GLANT_v7, got {model_name}")
 
-            trials = selected_trials(
-                model_name=model_name,
-                count=trial_count(model_name, args),
-                seed=args.seed + len(rows),
+            n_trials = trial_count(model_name, args)
+            sampler = optuna.samplers.TPESampler(seed=args.seed)
+            study = optuna.create_study(
+                direction="maximize",
+                study_name=f"{launch_id}_{dataset_name}_{model_name}",
+                sampler=sampler,
             )
 
-            for trial_id, params in enumerate(trials):
-                seed = args.seed + trial_id
+            def objective(trial: optuna.Trial) -> float:
+                params = suggest_params(trial, model_name)
+                trial_id = int(trial.number)
+                seed = args.seed if args.fixed_trial_seed else args.seed + trial_id
                 logger.info(
                     "HPO trial dataset=%s model=%s trial=%s seed=%s params=%s",
                     dataset_name,
@@ -402,9 +513,6 @@ def main() -> None:
                     seed,
                     params,
                 )
-
-                if args.dry_run:
-                    continue
 
                 row = run_trial(
                     base_config=base_config,
@@ -417,8 +525,41 @@ def main() -> None:
                     launch_id=launch_id,
                 )
                 rows.append(row)
+                trial.set_user_attr("run_dir", row["run_dir"])
+                trial.set_user_attr("best_epoch", row["best_epoch"])
+                trial.set_user_attr("final_test_metric", row["final_test_metric"])
                 write_hpo_results(rows, args.results_dir, launch_id)
                 write_best_configs(rows, args.results_dir, launch_id)
+                write_optuna_trials(
+                    study,
+                    results_dir=args.results_dir,
+                    launch_id=launch_id,
+                    dataset_name=dataset_name,
+                    model_name=model_name,
+                )
+                return float(row["best_val_metric"])
+
+            if args.dry_run:
+                for trial_idx in range(n_trials):
+                    trial = study.ask()
+                    params = suggest_params(trial, model_name)
+                    logger.info(
+                        "HPO dry-run dataset=%s model=%s trial=%s params=%s",
+                        dataset_name,
+                        model_name,
+                        trial_idx,
+                        params,
+                    )
+                continue
+
+            study.optimize(objective, n_trials=n_trials)
+            write_optuna_trials(
+                study,
+                results_dir=args.results_dir,
+                launch_id=launch_id,
+                dataset_name=dataset_name,
+                model_name=model_name,
+            )
 
     if args.dry_run:
         logger.info("Dry run complete. launch_id would be: %s", launch_id)

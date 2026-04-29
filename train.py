@@ -40,7 +40,24 @@ ModelArgs = Dict[str, torch.Tensor]
 MetricCallables = Dict[str, Callable[[nn.Module, Any], float]]
 MetricHistory = Dict[str, Dict[str, List[float]]]
 
-HOP_AWARE_CONVS = {"hop_gated_gatv2", "lambda_hop_gated_gatv2", "hoga"}
+HOP_AWARE_CONVS = {
+    "hop_gated_gatv2",
+    "lambda_hop_gated_gatv2",
+    "glant_v3",
+    "glantv3",
+    "glant_v4",
+    "glantv4",
+    "glant_v5",
+    "glantv5",
+    "glant_v6",
+    "glantv6",
+    "glant_v6p1",
+    "glantv6p1",
+    "glant_v6_p1",
+    "glant_v7",
+    "glantv7",
+    "hoga",
+}
 
 
 def select_mask_column(mask: torch.Tensor, split_idx: int = 0) -> torch.Tensor:
@@ -51,6 +68,10 @@ def select_mask_column(mask: torch.Tensor, split_idx: int = 0) -> torch.Tensor:
 
 
 def is_hop_aware_config(model_config: ConfigDict) -> bool:
+    return str(getattr(model_config, "conv_type", "")).lower() in HOP_AWARE_CONVS
+
+
+def requires_multihop_dataset(model_config: ConfigDict) -> bool:
     return str(getattr(model_config, "conv_type", "")).lower() in HOP_AWARE_CONVS
 
 
@@ -111,7 +132,7 @@ def select_dataset_for_model(
     model_name = canonical_model_name(model_name)
     model_config = config.baselines[model_name]
 
-    if is_hop_aware_config(model_config):
+    if requires_multihop_dataset(model_config):
         if "multihop_dataset" not in dataset:
             raise ValueError(
                 f"{model_name} requires multihop_dataset, but it was not built"
@@ -122,7 +143,7 @@ def select_dataset_for_model(
 
 
 def sparsify_dataset_edges(data: Any, model_config: ConfigDict) -> Any:
-    if not is_hop_aware_config(model_config):
+    if not requires_multihop_dataset(model_config):
         return data
 
     edge_index = data.edge_index

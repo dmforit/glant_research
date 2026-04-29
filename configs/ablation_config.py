@@ -21,6 +21,30 @@ GLANT_ABLATIONS: list[dict[str, Any]] = [
         "model_name": "glant_v1",
     },
     {
+        "ablation_name": "glant_v3",
+        "model_name": "glant_v3",
+    },
+    {
+        "ablation_name": "glant_v4",
+        "model_name": "glant_v4",
+    },
+    {
+        "ablation_name": "glant_v5",
+        "model_name": "glant_v5",
+    },
+    {
+        "ablation_name": "glant_v6",
+        "model_name": "glant_v6",
+    },
+    {
+        "ablation_name": "glant_v6p1",
+        "model_name": "glant_v6p1",
+    },
+    {
+        "ablation_name": "glant_v7",
+        "model_name": "glant_v7",
+    },
+    {
         "ablation_name": "glant_v2_lambda_0",
         "model_name": "glant_v2",
         "lambda_higher": 0.0,
@@ -78,8 +102,16 @@ def apply_ablation(config: ConfigDict, ablation_name: str) -> ConfigDict:
         config.baselines.GLANT_v2.learn_lambda_higher = False
         config.baselines.GLANT_v2.ablation_name = str(preset["ablation_name"])
 
-    if model_name == "GLANT_v1":
-        config.baselines.GLANT_v1.ablation_name = str(preset["ablation_name"])
+    if model_name in {
+        "GLANT_v1",
+        "GLANT_v3",
+        "GLANT_v4",
+        "GLANT_v5",
+        "GLANT_v6",
+        "GLANT_v6p1",
+        "GLANT_v7",
+    }:
+        config.baselines[model_name].ablation_name = str(preset["ablation_name"])
 
     if model_name == "GATv2":
         config.baselines.GATv2.ablation_name = str(preset["ablation_name"])
@@ -108,7 +140,17 @@ def validate_glant_ablations() -> None:
     for item in GLANT_ABLATIONS:
         model_name = canonical_model_name(str(item["model_name"]))
 
-        if model_name not in {"GATv2", "GLANT_v1", "GLANT_v2"}:
+        if model_name not in {
+            "GATv2",
+            "GLANT_v1",
+            "GLANT_v2",
+            "GLANT_v3",
+            "GLANT_v4",
+            "GLANT_v5",
+            "GLANT_v6",
+            "GLANT_v6p1",
+            "GLANT_v7",
+        }:
             raise ValueError(f"Invalid ablation model_name={item['model_name']!r}")
 
         if model_name == "GLANT_v2":

@@ -1,5 +1,124 @@
 # Запуск экспериментов
 
+## Рекомендуемый порядок запуска
+
+Все команды ниже запускаются из корня проекта. В примерах используется Python
+из окружения `graph_research`; на сервере можно заменить путь на обычный
+`python`, если активировано нужное окружение.
+
+Основной набор датасетов:
+
+```text
+Cora Citeseer Texas AIFB IMDB ACM
+```
+
+### 1. Запусти обычные baselines
+
+```powershell
+C:\Users\dmitr\miniconda3\envs\graph_research\python.exe -B scripts\run_experiment_batch.py --mode run_baselines --datasets Cora Citeseer Texas AIFB IMDB ACM --seeds 0 1 2 --gpu 0 --skip-existing
+```
+
+Запускает:
+
+```text
+GCN
+GraphSAGE
+GATv2
+```
+
+### 2. Запусти k-hop baselines
+
+```powershell
+C:\Users\dmitr\miniconda3\envs\graph_research\python.exe -B scripts\run_experiment_batch.py --mode run_khop_baselines --datasets Cora Citeseer Texas AIFB IMDB ACM --seeds 0 1 2 --gpu 0 --skip-existing
+```
+
+Запускает:
+
+```text
+MixHop
+TAGConv
+```
+
+### 3. Запусти HoGA
+
+```powershell
+C:\Users\dmitr\miniconda3\envs\graph_research\python.exe -B scripts\run_experiment_batch.py --mode run_hoga --datasets Cora Citeseer Texas AIFB IMDB ACM --seeds 0 1 2 --gpu 0 --skip-existing
+```
+
+### 4. Подбери гиперпараметры GLANT через Optuna
+
+Пробный запуск:
+
+```powershell
+C:\Users\dmitr\miniconda3\envs\graph_research\python.exe -B scripts\run_glant_hpo.py --datasets Cora Citeseer Texas AIFB IMDB ACM --models glant_v1 glant_v2 --trial-limit 1 --epochs 5 --gpu 0
+```
+
+Полный запуск:
+
+```powershell
+C:\Users\dmitr\miniconda3\envs\graph_research\python.exe -B scripts\run_glant_hpo.py --datasets Cora Citeseer Texas AIFB IMDB ACM --models glant_v1 glant_v2 --trials-v1 10 --trials-v2 20 --gpu 0
+```
+
+Результаты HPO:
+
+```text
+results/launches/{launch_id}/summary/hpo_results.csv
+results/launches/{launch_id}/summary/best_hpo_configs.json
+results/launches/{launch_id}/summary/optuna_trials_{dataset}_{model}.csv
+```
+
+### 5. Запусти финальные GLANT runs
+
+После HPO зафиксируй лучшие параметры из `best_hpo_configs.json`, затем:
+
+```powershell
+C:\Users\dmitr\miniconda3\envs\graph_research\python.exe -B scripts\run_experiment_batch.py --mode run_glant_v1 --datasets Cora Citeseer Texas AIFB IMDB ACM --seeds 0 1 2 --gpu 0 --skip-existing
+```
+
+```powershell
+C:\Users\dmitr\miniconda3\envs\graph_research\python.exe -B scripts\run_experiment_batch.py --mode run_glant_v2 --datasets Cora Citeseer Texas AIFB IMDB ACM --seeds 0 1 2 --gpu 0 --skip-existing
+```
+
+### 6. Запусти ablation
+
+```powershell
+C:\Users\dmitr\miniconda3\envs\graph_research\python.exe -B scripts\run_experiment_batch.py --mode run_ablation --datasets Cora Citeseer Texas AIFB IMDB ACM --seeds 0 1 2 --gpu 0 --skip-existing
+```
+
+### 7. Собери summary
+
+```powershell
+C:\Users\dmitr\miniconda3\envs\graph_research\python.exe -B collect_summary.py --results-dir results
+```
+
+Итоговые файлы:
+
+```text
+results/summary/main_results_long.csv
+results/summary/main_results.csv
+results/summary/main_results.xlsx
+```
+
+### Полезные batch-режимы
+
+Проверить команды без запуска:
+
+```powershell
+C:\Users\dmitr\miniconda3\envs\graph_research\python.exe -B scripts\run_experiment_batch.py --mode all --datasets Cora --seeds 0 --trial-limit 1 --epochs 5 --gpu 0 --dry-run
+```
+
+Запустить только HPO через batch runner:
+
+```powershell
+C:\Users\dmitr\miniconda3\envs\graph_research\python.exe -B scripts\run_experiment_batch.py --mode run_hpo --datasets Cora Citeseer Texas AIFB IMDB ACM --trial-limit 1 --epochs 5 --gpu 0
+```
+
+`--mode all` запускает весь pipeline: baselines, k-hop baselines, HoGA, HPO,
+GLANT-v1, GLANT-v2, ablation и summary. Для обычного рабочего запуска лучше
+идти по шагам выше.
+
+---
+
 Основной файл запуска:
 
 ```bash

@@ -24,6 +24,12 @@ from configs.model_config import (
     graphsage_config,
     glant_config,
     glant_v2_config,
+    glant_v3_config,
+    glant_v4_config,
+    glant_v5_config,
+    glant_v6_config,
+    glant_v6p1_config,
+    glant_v7_config,
     hoga_config,
     mixhop_config,
     tagconv_config,
@@ -59,10 +65,26 @@ def all_config() -> ConfigDict:
     config.seed = 0
 
     config.baselines = ConfigDict()
-    config.baselines.names = ["GLANT_v1", "GLANT_v2", "GATv2"]
+    config.baselines.names = [
+        "GLANT_v1",
+        "GLANT_v2",
+        "GLANT_v3",
+        "GLANT_v4",
+        "GLANT_v5",
+        "GLANT_v6",
+        "GLANT_v6p1",
+        "GLANT_v7",
+        "GATv2",
+    ]
     config.baselines.GLANT_v1 = glant_config()
     config.baselines.GLANT = config.baselines.GLANT_v1
     config.baselines.GLANT_v2 = glant_v2_config()
+    config.baselines.GLANT_v3 = glant_v3_config()
+    config.baselines.GLANT_v4 = glant_v4_config()
+    config.baselines.GLANT_v5 = glant_v5_config()
+    config.baselines.GLANT_v6 = glant_v6_config()
+    config.baselines.GLANT_v6p1 = glant_v6p1_config()
+    config.baselines.GLANT_v7 = glant_v7_config()
     config.baselines.GAT = gat_config()
     config.baselines.GATv2 = gatv2_config()
     config.baselines.GCN = gcn_config()

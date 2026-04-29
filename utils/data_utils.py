@@ -5,6 +5,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Optional, TypeAlias
 
+import numpy as np
 import torch
 import torch_geometric.datasets as pygds
 from ml_collections import ConfigDict
@@ -29,6 +30,19 @@ WEBKB = frozenset({"Texas", "Wisconsin"})
 HOP_AWARE_CONVS = frozenset({
     "hop_gated_gatv2",
     "lambda_hop_gated_gatv2",
+    "glant_v3",
+    "glantv3",
+    "glant_v4",
+    "glantv4",
+    "glant_v5",
+    "glantv5",
+    "glant_v6",
+    "glantv6",
+    "glant_v6p1",
+    "glantv6p1",
+    "glant_v6_p1",
+    "glant_v7",
+    "glantv7",
     "hoga",
 })
 
@@ -647,11 +661,21 @@ def edge_dir(cfg: ConfigDict, model: ConfigDict) -> Path:
     """Directory for cached sampled higher-hop edge sets."""
     num_samples = getattr(model, "num_samples", "default")
     num_edges = getattr(model, "num_edges", None)
+    sample_pool_edges = getattr(model, "sample_pool_edges", None)
+    sampling_seed = getattr(model, "sampling_seed", None)
     budget = f"E{num_edges}" if num_edges is not None else f"S{num_samples}"
+    pool = ""
+    if sample_pool_edges is not None:
+        pool_edges = int(sample_pool_edges)
+        if num_edges is None or pool_edges != int(num_edges):
+            pool = f"_P{pool_edges}"
+    seed_part = f"_seed{int(sampling_seed)}" if sampling_seed is not None else ""
     name = (
         f"{model.sampling_method}"
         f"_K{model.max_hops}"
         f"_{budget}"
+        f"{pool}"
+        f"{seed_part}"
     )
     return Path(cfg.save_path) / cfg.name / name / "shared"
 
@@ -684,21 +708,46 @@ def make_edges(
     cfg: ConfigDict,
     device: torch.device,
 ) -> Edges:
+    sample_model = model
+    sample_pool_edges = getattr(model, "sample_pool_edges", None)
+    num_edges = getattr(model, "num_edges", None)
+    if sample_pool_edges is not None and num_edges is not None:
+        pool_edges = int(sample_pool_edges)
+        if pool_edges > int(num_edges):
+            sample_model = copy(model)
+            sample_model.num_edges = pool_edges
+    sampling_seed = getattr(model, "sampling_seed", None)
+    if sampling_seed is not None:
+        seed = int(sampling_seed)
+        logger.info("Setting sampled hop edge RNG seed: %s", seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+
     logger.info(
-        "Generating sampled hop edges: method=%s max_hops=%s num_samples=%s num_edges=%s",
-        model.sampling_method,
-        model.max_hops,
-        getattr(model, "num_samples", "default"),
+        (
+            "Generating sampled hop edges: method=%s max_hops=%s "
+            "num_samples=%s num_edges=%s sample_pool_edges=%s"
+        ),
+        sample_model.sampling_method,
+        sample_model.max_hops,
+        getattr(sample_model, "num_samples", "default"),
         getattr(model, "num_edges", None),
+        getattr(sample_model, "num_edges", None),
     )
     edges = get_K_adjs(
         ds.edge_index,
-        model,
+        sample_model,
         cfg,
         feature_set=ds.x.to(device),
         device=device,
     )
-    return [edge.to(device=device, dtype=torch.int64) for edge in edges]
+    out = [edge.to(device=device, dtype=torch.int64) for edge in edges]
+    if sample_model is not model:
+        edge_budget = int(num_edges)
+        out = [out[0], *(edge[:, :edge_budget] for edge in out[1:])]
+    return out
 
 
 def save_edges(edges: Edges, path: Path) -> None:

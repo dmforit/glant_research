@@ -393,8 +393,10 @@ def balanced_unique_select(
                 continue
 
             seen.add(edge)
-            edge_index[0, total] = source
-            edge_index[1, total] = target
+            # edge_index[0, total] = source
+            # edge_index[1, total] = target
+            edge_index[0, total] = target
+            edge_index[1, total] = source
             total += 1
 
             if total >= next_progress:

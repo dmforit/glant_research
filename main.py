@@ -23,6 +23,23 @@ from utils.run_paths import make_launch_id
 
 SUPPORTED_GPU_IDS = {0, 1}
 DEFAULT_RESULTS_DIR = Path("results")
+HOP_AWARE_CONV_TYPES = {
+    "hop_gated_gatv2",
+    "lambda_hop_gated_gatv2",
+    "glant_v3",
+    "glantv3",
+    "glant_v4",
+    "glantv4",
+    "glant_v5",
+    "glantv5",
+    "glant_v6",
+    "glantv6",
+    "glant_v6p1",
+    "glantv6p1",
+    "glant_v6_p1",
+    "glant_v7",
+    "glantv7",
+}
 
 
 def configure_device(config: Any, gpu: Optional[int]) -> None:
@@ -116,7 +133,7 @@ def apply_cli_overrides(config: Any, pargs: argparse.Namespace) -> None:
 
     if pargs.conv_type is not None:
         config.baselines.GLANT.conv_type = pargs.conv_type
-        if pargs.conv_type != "hop_gated_gatv2":
+        if pargs.conv_type not in HOP_AWARE_CONV_TYPES:
             config.baselines.GLANT.max_hops = 1
 
     if pargs.heads is not None:
@@ -234,7 +251,20 @@ def results_xlsx_filename(pargs: argparse.Namespace) -> str:
         glant_config.conv_type = pargs.conv_type
 
     architecture = ""
-    if any(model in {"GLANT", "GLANT_v1"} for model in model_names) and glant_config.conv_type == "hop_gated_gatv2":
+    if any(
+        model in {
+            "GLANT",
+            "GLANT_v1",
+            "GLANT_v2",
+            "GLANT_v3",
+            "GLANT_v4",
+            "GLANT_v5",
+            "GLANT_v6",
+            "GLANT_v6p1",
+            "GLANT_v7",
+        }
+        for model in model_names
+    ) and glant_config.conv_type in HOP_AWARE_CONV_TYPES:
         architecture = f"_architecture-{slug(glant_config.architecture)}"
 
     mode = "train" if pargs.train else "test"
@@ -454,7 +484,20 @@ if __name__ == "__main__":
         "--conv-type",
         type=str,
         default=None,
-        choices=["hop_gated_gatv2", "gatv2", "gat", "sage", "gcn"],
+        choices=[
+            "hop_gated_gatv2",
+            "lambda_hop_gated_gatv2",
+            "glant_v3",
+            "glant_v4",
+            "glant_v5",
+            "glant_v6",
+            "glant_v6p1",
+            "glant_v7",
+            "gatv2",
+            "gat",
+            "sage",
+            "gcn",
+        ],
         help="Override GLANT wrapper conv_type",
     )
     parser.add_argument(

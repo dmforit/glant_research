@@ -11,6 +11,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from configs.config import all_config
+from utils.model_names import canonical_model_name
 from utils.model_utils import create_model
 
 
@@ -65,13 +66,26 @@ def main() -> None:
         check_output(model_name, out, x.size(0), ds_config.out_channels)
         print(f"ok {model_name} {tuple(out.shape)}")
 
-    for model_name in ["hoga", "glant_v1"]:
+    for model_name in [
+        "hoga",
+        "glant_v1",
+        "glant_v2",
+        "glant_v3",
+        "glant_v4",
+        "glant_v5",
+        "glant_v6",
+        "glant_v6p1",
+        "glant_v7",
+    ]:
         model = create_model(model_name, config, ds_config)
         model.eval()
+        canonical_name = canonical_model_name(model_name)
+        model_config = config.baselines[canonical_name]
+        model_hops = int(getattr(model_config, "max_hops", len(edge_index_list)))
         with torch.no_grad():
-            out = model(x=x, edge_index=edge_index_list, edge_attr=None)
+            out = model(x=x, edge_index=edge_index_list[:model_hops], edge_attr=None)
         check_output(model_name, out, x.size(0), ds_config.out_channels)
-        print(f"ok {model_name} K=3 {tuple(out.shape)}")
+        print(f"ok {model_name} K={model_hops} {tuple(out.shape)}")
 
     model = create_model("glant_v1", config, ds_config)
     model.eval()
