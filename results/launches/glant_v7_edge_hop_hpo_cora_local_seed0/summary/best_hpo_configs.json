@@ -1,0 +1,31 @@
+{
+  "Cora/GLANT_v7": {
+    "dataset_name": "Cora",
+    "model_name": "GLANT_v7",
+    "trial_id": 30,
+    "seed": 0,
+    "params": {
+      "act": "elu",
+      "alpha": 1.0,
+      "attn_dropout": 0.45,
+      "branch_norm": "none",
+      "dropout": 0.7,
+      "heads": 8,
+      "hidden_channels": 32,
+      "hop_scalar_profile": "one_hop_strong",
+      "lr": 0.002,
+      "max_hops": 2,
+      "norm": "layernorm",
+      "num_edges": 15000,
+      "num_layers": 2,
+      "root_scalar_init": 0.9,
+      "v7_input_skip": false,
+      "v7_num_banks": 2,
+      "weight_decay": 0.002
+    },
+    "best_val_metric": 0.822,
+    "final_test_metric": 0.814,
+    "best_epoch": 71,
+    "run_dir": "results\\launches\\glant_v7_edge_hop_hpo_cora_local_seed0\\raw\\Cora\\GLANT_v7\\hpo_trial_030\\seed_0\\run_0"
+  }
+}

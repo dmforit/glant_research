@@ -1,0 +1,248 @@
+{
+  "ACM/GLANT_v1": {
+    "dataset_name": "ACM",
+    "model_name": "GLANT_v1",
+    "trial_id": 5,
+    "seed": 5,
+    "params": {
+      "alpha": 0.3,
+      "dropout": 0.7,
+      "heads": 8,
+      "hidden_channels": 64,
+      "max_hops": 3,
+      "norm": "layernorm",
+      "num_edges": 10000,
+      "num_layers": 2
+    },
+    "best_val_metric": 0.9281767955801103,
+    "final_test_metric": 0.9244570349386212,
+    "best_epoch": 159,
+    "run_dir": "results/launches/20260429T062912_hpo_cora-citeseer-texas-aifb-imdb-acm_glant/raw/ACM/GLANT_v1/hpo_trial_005/seed_5/run_0"
+  },
+  "ACM/GLANT_v2": {
+    "dataset_name": "ACM",
+    "model_name": "GLANT_v2",
+    "trial_id": 19,
+    "seed": 19,
+    "params": {
+      "alpha": 0.3,
+      "dropout": 0.7,
+      "heads": 8,
+      "hidden_channels": 32,
+      "lambda_higher": 0.0,
+      "max_hops": 3,
+      "norm": "none",
+      "num_edges": 25000,
+      "num_layers": 2
+    },
+    "best_val_metric": 0.9281767955801103,
+    "final_test_metric": 0.9282341831916904,
+    "best_epoch": 173,
+    "run_dir": "results/launches/20260429T062912_hpo_cora-citeseer-texas-aifb-imdb-acm_glant/raw/ACM/GLANT_v2/hpo_trial_019/seed_19/run_0"
+  },
+  "AIFB/GLANT_v1": {
+    "dataset_name": "AIFB",
+    "model_name": "GLANT_v1",
+    "trial_id": 0,
+    "seed": 0,
+    "params": {
+      "alpha": 0.3,
+      "dropout": 0.7,
+      "heads": 8,
+      "hidden_channels": 64,
+      "max_hops": 3,
+      "norm": "layernorm",
+      "num_edges": 75000,
+      "num_layers": 2
+    },
+    "best_val_metric": 0.5357142857142857,
+    "final_test_metric": 0.3333333333333333,
+    "best_epoch": 13,
+    "run_dir": "results/launches/20260429T062912_hpo_cora-citeseer-texas-aifb-imdb-acm_glant/raw/AIFB/GLANT_v1/hpo_trial_000/seed_0/run_0"
+  },
+  "AIFB/GLANT_v2": {
+    "dataset_name": "AIFB",
+    "model_name": "GLANT_v2",
+    "trial_id": 0,
+    "seed": 0,
+    "params": {
+      "alpha": 0.1,
+      "dropout": 0.5,
+      "heads": 4,
+      "hidden_channels": 32,
+      "lambda_higher": 0.1,
+      "max_hops": 2,
+      "norm": "layernorm",
+      "num_edges": 50000,
+      "num_layers": 3
+    },
+    "best_val_metric": 0.5357142857142857,
+    "final_test_metric": 0.4166666666666667,
+    "best_epoch": 1,
+    "run_dir": "results/launches/20260429T062912_hpo_cora-citeseer-texas-aifb-imdb-acm_glant/raw/AIFB/GLANT_v2/hpo_trial_000/seed_0/run_0"
+  },
+  "Citeseer/GLANT_v1": {
+    "dataset_name": "Citeseer",
+    "model_name": "GLANT_v1",
+    "trial_id": 7,
+    "seed": 7,
+    "params": {
+      "alpha": 0.3,
+      "dropout": 0.3,
+      "heads": 4,
+      "hidden_channels": 64,
+      "max_hops": 2,
+      "norm": "none",
+      "num_edges": 25000,
+      "num_layers": 2
+    },
+    "best_val_metric": 0.734,
+    "final_test_metric": 0.686,
+    "best_epoch": 54,
+    "run_dir": "results/launches/20260429T062912_hpo_cora-citeseer-texas-aifb-imdb-acm_glant/raw/Citeseer/GLANT_v1/hpo_trial_007/seed_7/run_0"
+  },
+  "Citeseer/GLANT_v2": {
+    "dataset_name": "Citeseer",
+    "model_name": "GLANT_v2",
+    "trial_id": 14,
+    "seed": 14,
+    "params": {
+      "alpha": 0.03,
+      "dropout": 0.5,
+      "heads": 8,
+      "hidden_channels": 64,
+      "lambda_higher": 0.0,
+      "max_hops": 2,
+      "norm": "none",
+      "num_edges": 25000,
+      "num_layers": 2
+    },
+    "best_val_metric": 0.736,
+    "final_test_metric": 0.712,
+    "best_epoch": 218,
+    "run_dir": "results/launches/20260429T062912_hpo_cora-citeseer-texas-aifb-imdb-acm_glant/raw/Citeseer/GLANT_v2/hpo_trial_014/seed_14/run_0"
+  },
+  "Cora/GLANT_v1": {
+    "dataset_name": "Cora",
+    "model_name": "GLANT_v1",
+    "trial_id": 2,
+    "seed": 2,
+    "params": {
+      "alpha": 1.0,
+      "dropout": 0.5,
+      "heads": 8,
+      "hidden_channels": 32,
+      "max_hops": 3,
+      "norm": "layernorm",
+      "num_edges": 75000,
+      "num_layers": 2
+    },
+    "best_val_metric": 0.808,
+    "final_test_metric": 0.786,
+    "best_epoch": 11,
+    "run_dir": "results/launches/20260429T062912_hpo_cora-citeseer-texas-aifb-imdb-acm_glant/raw/Cora/GLANT_v1/hpo_trial_002/seed_2/run_0"
+  },
+  "Cora/GLANT_v2": {
+    "dataset_name": "Cora",
+    "model_name": "GLANT_v2",
+    "trial_id": 9,
+    "seed": 9,
+    "params": {
+      "alpha": 1.0,
+      "dropout": 0.7,
+      "heads": 4,
+      "hidden_channels": 32,
+      "lambda_higher": 0.25,
+      "max_hops": 3,
+      "norm": "layernorm",
+      "num_edges": 75000,
+      "num_layers": 3
+    },
+    "best_val_metric": 0.802,
+    "final_test_metric": 0.791,
+    "best_epoch": 61,
+    "run_dir": "results/launches/20260429T062912_hpo_cora-citeseer-texas-aifb-imdb-acm_glant/raw/Cora/GLANT_v2/hpo_trial_009/seed_9/run_0"
+  },
+  "IMDB/GLANT_v1": {
+    "dataset_name": "IMDB",
+    "model_name": "GLANT_v1",
+    "trial_id": 18,
+    "seed": 18,
+    "params": {
+      "alpha": 1.0,
+      "dropout": 0.7,
+      "heads": 8,
+      "hidden_channels": 64,
+      "max_hops": 3,
+      "norm": "layernorm",
+      "num_edges": 10000,
+      "num_layers": 3
+    },
+    "best_val_metric": 0.6375,
+    "final_test_metric": 0.5598044853364003,
+    "best_epoch": 23,
+    "run_dir": "results/launches/20260429T062912_hpo_cora-citeseer-texas-aifb-imdb-acm_glant/raw/IMDB/GLANT_v1/hpo_trial_018/seed_18/run_0"
+  },
+  "IMDB/GLANT_v2": {
+    "dataset_name": "IMDB",
+    "model_name": "GLANT_v2",
+    "trial_id": 5,
+    "seed": 5,
+    "params": {
+      "alpha": 0.03,
+      "dropout": 0.5,
+      "heads": 4,
+      "hidden_channels": 32,
+      "lambda_higher": 0.25,
+      "max_hops": 3,
+      "norm": "layernorm",
+      "num_edges": 50000,
+      "num_layers": 2
+    },
+    "best_val_metric": 0.6125,
+    "final_test_metric": 0.5537665324899368,
+    "best_epoch": 6,
+    "run_dir": "results/launches/20260429T062912_hpo_cora-citeseer-texas-aifb-imdb-acm_glant/raw/IMDB/GLANT_v2/hpo_trial_005/seed_5/run_0"
+  },
+  "Texas/GLANT_v1": {
+    "dataset_name": "Texas",
+    "model_name": "GLANT_v1",
+    "trial_id": 4,
+    "seed": 4,
+    "params": {
+      "alpha": 0.75,
+      "dropout": 0.7,
+      "heads": 8,
+      "hidden_channels": 32,
+      "max_hops": 2,
+      "norm": "none",
+      "num_edges": 50000,
+      "num_layers": 2
+    },
+    "best_val_metric": 0.6779661016949152,
+    "final_test_metric": 0.4864864864864865,
+    "best_epoch": 34,
+    "run_dir": "results/launches/20260429T062912_hpo_cora-citeseer-texas-aifb-imdb-acm_glant/raw/Texas/GLANT_v1/hpo_trial_004/seed_4/run_0"
+  },
+  "Texas/GLANT_v2": {
+    "dataset_name": "Texas",
+    "model_name": "GLANT_v2",
+    "trial_id": 4,
+    "seed": 4,
+    "params": {
+      "alpha": 0.3,
+      "dropout": 0.5,
+      "heads": 8,
+      "hidden_channels": 64,
+      "lambda_higher": 0.5,
+      "max_hops": 3,
+      "norm": "none",
+      "num_edges": 75000,
+      "num_layers": 3
+    },
+    "best_val_metric": 0.6779661016949152,
+    "final_test_metric": 0.6486486486486487,
+    "best_epoch": 67,
+    "run_dir": "results/launches/20260429T062912_hpo_cora-citeseer-texas-aifb-imdb-acm_glant/raw/Texas/GLANT_v2/hpo_trial_004/seed_4/run_0"
+  }
+}
