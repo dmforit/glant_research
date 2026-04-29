@@ -105,6 +105,7 @@ def glant_config() -> ConfigDict:
     config.load_samples = False
     config.sampling_method = "balanced_unique_select"
     config.num_samples = 15
+    config.num_edges = None
 
     config.log_hop_diagnostics = True
     config.log_hop_weights = True
@@ -282,6 +283,7 @@ def hoga_config() -> ConfigDict:
     config.select_method = "sim_walk"
     config.sampling_method = "sim_walk"
     config.num_samples = 15
+    config.num_edges = None
 
     config.training = training_config(
         lr=0.005,

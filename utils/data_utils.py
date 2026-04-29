@@ -646,10 +646,12 @@ def mh_cfg(config: ConfigDict) -> Optional[ConfigDict]:
 def edge_dir(cfg: ConfigDict, model: ConfigDict) -> Path:
     """Directory for cached sampled higher-hop edge sets."""
     num_samples = getattr(model, "num_samples", "default")
+    num_edges = getattr(model, "num_edges", None)
+    budget = f"E{num_edges}" if num_edges is not None else f"S{num_samples}"
     name = (
         f"{model.sampling_method}"
         f"_K{model.max_hops}"
-        f"_S{num_samples}"
+        f"_{budget}"
     )
     return Path(cfg.save_path) / cfg.name / name / "shared"
 
@@ -683,10 +685,11 @@ def make_edges(
     device: torch.device,
 ) -> Edges:
     logger.info(
-        "Generating sampled hop edges: method=%s max_hops=%s num_samples=%s",
+        "Generating sampled hop edges: method=%s max_hops=%s num_samples=%s num_edges=%s",
         model.sampling_method,
         model.max_hops,
         getattr(model, "num_samples", "default"),
+        getattr(model, "num_edges", None),
     )
     edges = get_K_adjs(
         ds.edge_index,

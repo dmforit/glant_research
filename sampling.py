@@ -147,6 +147,10 @@ def sampling_budget(
 ) -> int:
     """Return total edge samples to generate for each extra hop."""
     if method == BALANCED_UNIQUE_SELECT_METHOD:
+        num_edges = getattr(model_config, 'num_edges', None)
+        if num_edges is not None:
+            return int(num_edges)
+
         samples_per_node = int(getattr(model_config, 'num_samples', 1))
         return num_nodes * samples_per_node
 
