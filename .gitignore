@@ -6,8 +6,6 @@ model_runs/*
 !model_runs/.gitkeep
 checkpoints/*
 !checkpoints/.gitkeep
-results/*
-!results/.gitkeep
 logs/*
 !logs/.gitkeep
 

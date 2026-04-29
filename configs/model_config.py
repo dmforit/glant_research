@@ -267,6 +267,7 @@ def hoga_config() -> ConfigDict:
     config.conv_type = "hoga"
     config.model_name = "HoGA GAT"
     config.max_hops = 3
+    config.alpha = 1.0
     config.K_hops = 3
     config.layer_type = "multi_hop"
     config.head_type = "gat"
@@ -284,6 +285,13 @@ def hoga_config() -> ConfigDict:
     config.sampling_method = "sim_walk"
     config.num_samples = 15
     config.num_edges = None
+    config.sparsify_hops = False
+    config.sparsifier_cache_masks = True
+
+    config.walk = ConfigDict()
+    config.walk.gamma = 0.9
+    config.walk.jump_prob = 0.05
+    config.walk.use_cosine = True
 
     config.training = training_config(
         lr=0.005,

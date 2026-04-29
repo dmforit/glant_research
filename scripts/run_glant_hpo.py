@@ -36,20 +36,20 @@ DEFAULT_TRIALS = {
 
 SEARCH_SPACE = {
     "GLANT_v1": {
-        "max_hops": [2, 3, 4],
+        "max_hops": [2, 3],
         "alpha": [0.03, 0.05, 0.1, 0.3, 0.5, 0.75, 1.0],
         "num_edges": [10000, 25000, 50000, 75000],
-        "num_layers": [2, 3, 4],
+        "num_layers": [2, 3],
         "hidden_channels": [32, 64],
         "heads": [4, 8],
         "dropout": [0.3, 0.5, 0.7],
         "norm": ["none", "layernorm"],
     },
     "GLANT_v2": {
-        "max_hops": [2, 3, 4],
+        "max_hops": [2, 3],
         "alpha": [0.03, 0.05, 0.1, 0.3, 0.5, 0.75, 1.0],
         "num_edges": [10000, 25000, 50000, 75000],
-        "num_layers": [2, 3, 4],
+        "num_layers": [2, 3],
         "hidden_channels": [32, 64],
         "heads": [4, 8],
         "dropout": [0.3, 0.5, 0.7],
