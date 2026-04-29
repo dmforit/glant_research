@@ -1,4 +1,45 @@
 {
+  "ACM/GLANT_v1": {
+    "dataset_name": "ACM",
+    "model_name": "GLANT_v1",
+    "trial_id": 5,
+    "seed": 5,
+    "params": {
+      "alpha": 0.3,
+      "dropout": 0.7,
+      "heads": 8,
+      "hidden_channels": 64,
+      "max_hops": 3,
+      "norm": "layernorm",
+      "num_edges": 10000,
+      "num_layers": 2
+    },
+    "best_val_metric": 0.9281767955801103,
+    "final_test_metric": 0.9244570349386212,
+    "best_epoch": 159,
+    "run_dir": "results/launches/20260429T062912_hpo_cora-citeseer-texas-aifb-imdb-acm_glant/raw/ACM/GLANT_v1/hpo_trial_005/seed_5/run_0"
+  },
+  "ACM/GLANT_v2": {
+    "dataset_name": "ACM",
+    "model_name": "GLANT_v2",
+    "trial_id": 19,
+    "seed": 19,
+    "params": {
+      "alpha": 0.3,
+      "dropout": 0.7,
+      "heads": 8,
+      "hidden_channels": 32,
+      "lambda_higher": 0.0,
+      "max_hops": 3,
+      "norm": "none",
+      "num_edges": 25000,
+      "num_layers": 2
+    },
+    "best_val_metric": 0.9281767955801103,
+    "final_test_metric": 0.9282341831916904,
+    "best_epoch": 173,
+    "run_dir": "results/launches/20260429T062912_hpo_cora-citeseer-texas-aifb-imdb-acm_glant/raw/ACM/GLANT_v2/hpo_trial_019/seed_19/run_0"
+  },
   "AIFB/GLANT_v1": {
     "dataset_name": "AIFB",
     "model_name": "GLANT_v1",
