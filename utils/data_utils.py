@@ -43,6 +43,8 @@ HOP_AWARE_CONVS = frozenset({
     "glant_v6_p1",
     "glant_v7",
     "glantv7",
+    "glant_v8",
+    "glantv8",
     "hoga",
 })
 

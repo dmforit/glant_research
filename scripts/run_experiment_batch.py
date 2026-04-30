@@ -25,6 +25,7 @@ MODEL_GROUPS = {
     "run_glant_v1": ["glant_v1"],
     "run_glant_v2": ["glant_v2"],
     "run_glant_v7": ["glant_v7"],
+    "run_glant_v8": ["glant_v8"],
 }
 
 MODE_CHOICES = [
@@ -104,6 +105,7 @@ def selected_modes(mode: str) -> list[str]:
             "run_glant_v1",
             "run_glant_v2",
             "run_glant_v7",
+            "run_glant_v8",
             "run_ablation",
             "collect_summary",
         ]

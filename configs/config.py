@@ -30,6 +30,7 @@ from configs.model_config import (
     glant_v6_config,
     glant_v6p1_config,
     glant_v7_config,
+    glant_v8_config,
     hoga_config,
     mixhop_config,
     tagconv_config,
@@ -74,6 +75,7 @@ def all_config() -> ConfigDict:
         "GLANT_v6",
         "GLANT_v6p1",
         "GLANT_v7",
+        "GLANT_v8",
         "GATv2",
     ]
     config.baselines.GLANT_v1 = glant_config()
@@ -85,6 +87,7 @@ def all_config() -> ConfigDict:
     config.baselines.GLANT_v6 = glant_v6_config()
     config.baselines.GLANT_v6p1 = glant_v6p1_config()
     config.baselines.GLANT_v7 = glant_v7_config()
+    config.baselines.GLANT_v8 = glant_v8_config()
     config.baselines.GAT = gat_config()
     config.baselines.GATv2 = gatv2_config()
     config.baselines.GCN = gcn_config()

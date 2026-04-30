@@ -31,6 +31,7 @@ HopDiagnosticConv: TypeAlias = Union[
     "GLANTv6Conv",
     "GLANTv6p1Conv",
     "GLANTv7Conv",
+    "GLANTv8Conv",
 ]
 
 
@@ -1273,6 +1274,125 @@ class GLANTv7Conv(nn.Module):
         )
 
 
+
+class GLANTv8Conv(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        max_hops: int,
+        heads: int = 1,
+        concat: bool = False,
+        negative_slope: float = 0.2,
+        dropout: float = 0.0,
+        add_self_loops: bool = True,
+        edge_dim: Optional[int] = None,
+        fill_value: Union[float, Tensor, str] = "mean",
+        bias: bool = True,
+        residual: bool = False,
+        use_zero_hop: bool = True,
+        **kwargs,
+    ) -> None:
+        super().__init__()
+        self.max_hops = int(max_hops)
+        self.edge_dim = edge_dim
+        self.use_zero_hop = bool(use_zero_hop)
+        self.hop_dim = out_channels * heads if concat else out_channels
+        self.num_branches = self.max_hops + int(self.use_zero_hop)
+        self.output_dim = self.hop_dim * self.num_branches
+        self.zero_hop = nn.Linear(in_channels, self.hop_dim, bias=bias) if self.use_zero_hop else None
+        self.convs = nn.ModuleList([
+            GATv2Conv(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                heads=heads,
+                concat=concat,
+                negative_slope=negative_slope,
+                dropout=dropout,
+                add_self_loops=add_self_loops if hop == 0 else False,
+                edge_dim=edge_dim if hop == 0 else None,
+                fill_value=fill_value,
+                bias=bias,
+                residual=residual,
+                share_weights=False,
+                **kwargs,
+            )
+            for hop in range(self.max_hops)
+        ])
+        self.hop_gate = nn.Linear(in_channels, self.num_branches)
+
+    def reset_parameters(self) -> None:
+        if self.zero_hop is not None:
+            self.zero_hop.reset_parameters()
+        for conv in self.convs:
+            conv.reset_parameters()
+        self.hop_gate.reset_parameters()
+
+    def forward(
+        self,
+        x: Tensor,
+        edge_index: EdgeInput,
+        edge_attr: Optional[Tensor] = None,
+        return_hop_diagnostics: bool = False,
+        return_attention_weights: bool = True,
+    ) -> Tensor | tuple[Tensor, dict[str, Any]]:
+        edges = [edge_index] if torch.is_tensor(edge_index) else list(edge_index)
+        messages = [self.zero_hop(x)] if self.zero_hop is not None else []
+        empty_hops = [False] if self.zero_hop is not None else []
+        attention: list[dict[str, Any]] = []
+
+        for hop in range(self.max_hops):
+            ei = edges[hop]
+            if ei.size(1) == 0 and hop > 0:
+                msg = x.new_zeros(x.size(0), self.hop_dim)
+                empty_hops.append(True)
+                if return_hop_diagnostics:
+                    attention.append({"hop": hop, "att_edge_index": None, "alpha": None})
+            elif return_hop_diagnostics and return_attention_weights:
+                msg, (att_edge_index, alpha) = self.convs[hop](
+                    x,
+                    ei,
+                    edge_attr=edge_attr if hop == 0 else None,
+                    return_attention_weights=True,
+                )
+                empty_hops.append(False)
+                attention.append({
+                    "hop": hop,
+                    "att_edge_index": att_edge_index.detach(),
+                    "alpha": alpha.detach(),
+                })
+            else:
+                msg = self.convs[hop](x, ei, edge_attr=edge_attr if hop == 0 else None)
+                empty_hops.append(False)
+            messages.append(msg)
+
+        messages_t = torch.stack(messages, dim=1)
+        logits = self.hop_gate(x)[:, : messages_t.size(1)]
+        weights = torch.sigmoid(logits).masked_fill(
+            torch.tensor(empty_hops, device=x.device, dtype=torch.bool).unsqueeze(0),
+            0.0,
+        )
+        out = (messages_t * weights.unsqueeze(-1)).flatten(start_dim=1)
+
+        if return_hop_diagnostics:
+            return out, {
+                "weights": weights.detach(),
+                "hop_logits": logits.detach(),
+                "num_hops": messages_t.size(1),
+                "edge_hops": self.max_hops,
+                "branch_names": (["zero_hop"] if self.use_zero_hop else []) + [
+                    f"hop_{hop + 1}" for hop in range(self.max_hops)
+                ],
+                "messages_shape": list(messages_t.shape),
+                "empty_hops": [bool(value) for value in empty_hops],
+                "attention": attention,
+                "weight_hop_offset": 0,
+                "attention_hop_offset": int(self.use_zero_hop),
+                "hop_scalars": torch.sigmoid(self.hop_gate.bias[: messages_t.size(1)]).detach(),
+            }
+        return out
+
+
 class LambdaHopGatedGATv2Conv(nn.Module):
     """GLANT-v2 layer.
 
@@ -1691,6 +1811,8 @@ class GLANT(nn.Module):
         "glant_v6_p1",
         "glantv7",
         "glant_v7",
+        "glantv8",
+        "glant_v8",
     }
     EDGE_ATTR_CONVS = HOP_AWARE_CONVS | {"gatv2", "gat"}
     HOP_DIAGNOSTIC_CONVS = (
@@ -1702,6 +1824,7 @@ class GLANT(nn.Module):
         GLANTv6Conv,
         GLANTv6p1Conv,
         GLANTv7Conv,
+        GLANTv8Conv,
     )
 
     def __init__(
@@ -1749,6 +1872,7 @@ class GLANT(nn.Module):
 
         self.use_hops = self.conv_type in self.HOP_AWARE_CONVS
         self.is_glant_v7 = self.conv_type in {"glantv7", "glant_v7"}
+        self.is_glant_v8 = self.conv_type in {"glantv8", "glant_v8"}
         self.use_edge_attr = (
             self.conv_type in self.EDGE_ATTR_CONVS
             and self.edge_dim is not None
@@ -1768,6 +1892,9 @@ class GLANT(nn.Module):
 
         if self.is_glant_v7:
             self._init_glant_v7(input_dim)
+            return
+        if self.is_glant_v8:
+            self._init_glant_v8(input_dim)
             return
 
         hidden_layers = self.num_layers - 1
@@ -1896,6 +2023,24 @@ class GLANT(nn.Module):
             bias=bool(cfg_get(self.model_config, "classifier_bias", True)),
         )
 
+    def _init_glant_v8(self, input_dim: int) -> None:
+        num_layers = max(self.num_layers - 1, 1)
+        layer_input_dim = input_dim
+        layer_output_dim = input_dim
+
+        for _ in range(num_layers):
+            conv = self._make_glant_v8(layer_input_dim, self.hidden_channels, False)
+            self.convs.append(conv)
+            layer_output_dim = conv.output_dim
+            self.norms.append(self._make_norm(layer_output_dim))
+            layer_input_dim = layer_output_dim
+
+        self.v8_classifier = nn.Linear(
+            layer_output_dim,
+            self.out_channels,
+            bias=bool(cfg_get(self.model_config, "classifier_bias", True)),
+        )
+
     def _attention_args(self, out_dim: int, is_last: bool) -> dict[str, Any]:
         if is_last:
             return {
@@ -1952,6 +2097,9 @@ class GLANT(nn.Module):
 
         if self.conv_type in {"glantv7", "glant_v7"}:
             return self._make_glant_v7(in_channels, out_dim, is_last)
+
+        if self.conv_type in {"glantv8", "glant_v8"}:
+            return self._make_glant_v8(in_channels, out_dim, is_last)
 
         if self.conv_type == "gatv2":
             return self._make_gatv2(in_channels, out_dim, is_last)
@@ -2087,6 +2235,26 @@ class GLANT(nn.Module):
             **self._attention_args(out_dim, is_last),
         )
 
+    def _make_glant_v8(
+        self,
+        in_channels: int,
+        out_dim: int,
+        is_last: bool,
+    ) -> GLANTv8Conv:
+        return GLANTv8Conv(
+            in_channels=in_channels,
+            max_hops=self.max_hops,
+            negative_slope=float(cfg_get(self.model_config, "negative_slope", 0.2)),
+            dropout=self.attn_dropout,
+            add_self_loops=bool(cfg_get(self.model_config, "add_self_loops", True)),
+            edge_dim=self.edge_dim,
+            fill_value=cfg_get(self.model_config, "fill_value", "mean"),
+            bias=bool(cfg_get(self.model_config, "bias", True)),
+            residual=bool(cfg_get(self.model_config, "conv_residual", False)),
+            use_zero_hop=bool(cfg_get(self.model_config, "use_zero_hop", True)),
+            **self._attention_args(out_dim, is_last),
+        )
+
     def _make_lambda_hop_gated_gatv2(
         self,
         in_channels: int,
@@ -2178,9 +2346,26 @@ class GLANT(nn.Module):
             if hasattr(norm, "reset_parameters"):
                 norm.reset_parameters()
 
+    def _reset_glant_v8_parameters(self) -> None:
+        if self.pre_lin is not None:
+            self.pre_lin.reset_parameters()
+
+        self.v8_classifier.reset_parameters()
+
+        for conv in self.convs:
+            conv.reset_parameters()
+
+        for norm in self.norms:
+            if hasattr(norm, "reset_parameters"):
+                norm.reset_parameters()
+
     def reset_parameters(self) -> None:
         if self.is_glant_v7:
             self._reset_glant_v7_parameters()
+            self._attention_baselines.clear()
+            return
+        if self.is_glant_v8:
+            self._reset_glant_v8_parameters()
             self._attention_baselines.clear()
             return
 
@@ -2960,6 +3145,56 @@ class GLANT(nn.Module):
 
         return classifier(h)
 
+    def _forward_glant_v8(
+        self,
+        x: Tensor,
+        edges: list[Tensor],
+        edge_attr: Optional[Tensor],
+        *,
+        log_hop_diagnostics: bool,
+        hop_log_path: str,
+        epoch: Optional[int],
+        phase: str,
+        lr: Optional[float],
+        log_only_layer: Optional[int],
+    ) -> Tensor:
+        h = F.dropout(x, p=self.dropout, training=self.training)
+
+        for layer_id, conv in enumerate(self.convs):
+            want_hop_diagnostics = (
+                log_hop_diagnostics
+                and (log_only_layer is None or log_only_layer == layer_id)
+            )
+            conv_out = self._call_conv(
+                conv=conv,
+                x=h,
+                edges=edges,
+                edge_attr=edge_attr,
+                return_hop_diagnostics=want_hop_diagnostics,
+            )
+
+            if want_hop_diagnostics:
+                h, diagnostics = conv_out
+                self._write_hop_diagnostics(
+                    hop_log_path,
+                    self._summarize_hop_diagnostics(
+                        conv=conv,
+                        diagnostics=diagnostics,
+                        epoch=epoch,
+                        phase=phase,
+                        layer_id=layer_id,
+                        lr=lr,
+                    ),
+                )
+            else:
+                h = conv_out
+
+            h = self.norms[layer_id](h)
+            h = self._activate(h)
+            h = F.dropout(h, p=self.dropout, training=self.training)
+
+        return self.v8_classifier(h)
+
     def forward(
         self,
         x: Tensor,
@@ -2981,6 +3216,18 @@ class GLANT(nn.Module):
 
         if self.is_glant_v7:
             return self._forward_glant_v7(
+                x,
+                edges,
+                edge_attr,
+                log_hop_diagnostics=log_hop_diagnostics,
+                hop_log_path=hop_log_path,
+                epoch=epoch,
+                phase=phase,
+                lr=lr,
+                log_only_layer=log_only_layer,
+            )
+        if self.is_glant_v8:
+            return self._forward_glant_v8(
                 x,
                 edges,
                 edge_attr,

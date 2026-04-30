@@ -39,6 +39,8 @@ HOP_AWARE_CONV_TYPES = {
     "glant_v6_p1",
     "glant_v7",
     "glantv7",
+    "glant_v8",
+    "glantv8",
 }
 
 
@@ -262,6 +264,7 @@ def results_xlsx_filename(pargs: argparse.Namespace) -> str:
             "GLANT_v6",
             "GLANT_v6p1",
             "GLANT_v7",
+            "GLANT_v8",
         }
         for model in model_names
     ) and glant_config.conv_type in HOP_AWARE_CONV_TYPES:
@@ -493,6 +496,7 @@ if __name__ == "__main__":
             "glant_v6",
             "glant_v6p1",
             "glant_v7",
+            "glant_v8",
             "gatv2",
             "gat",
             "sage",

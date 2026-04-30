@@ -45,6 +45,10 @@ GLANT_ABLATIONS: list[dict[str, Any]] = [
         "model_name": "glant_v7",
     },
     {
+        "ablation_name": "glant_v8",
+        "model_name": "glant_v8",
+    },
+    {
         "ablation_name": "glant_v2_lambda_0",
         "model_name": "glant_v2",
         "lambda_higher": 0.0,
@@ -110,6 +114,7 @@ def apply_ablation(config: ConfigDict, ablation_name: str) -> ConfigDict:
         "GLANT_v6",
         "GLANT_v6p1",
         "GLANT_v7",
+        "GLANT_v8",
     }:
         config.baselines[model_name].ablation_name = str(preset["ablation_name"])
 
@@ -150,6 +155,7 @@ def validate_glant_ablations() -> None:
             "GLANT_v6",
             "GLANT_v6p1",
             "GLANT_v7",
+            "GLANT_v8",
         }:
             raise ValueError(f"Invalid ablation model_name={item['model_name']!r}")
 

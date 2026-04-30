@@ -35,6 +35,7 @@ def is_glant_model(model_name: str, model_config: ConfigDict) -> bool:
             "GLANT_v6",
             "GLANT_v6p1",
             "GLANT_v7",
+            "GLANT_v8",
         }
         or conv_type in {
             "hop_gated_gatv2",
@@ -52,6 +53,8 @@ def is_glant_model(model_name: str, model_config: ConfigDict) -> bool:
             "glant_v6_p1",
             "glant_v7",
             "glantv7",
+            "glant_v8",
+            "glantv8",
         }
     )
 

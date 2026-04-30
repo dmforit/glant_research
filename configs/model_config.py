@@ -341,6 +341,63 @@ def glant_v7_config() -> ConfigDict:
     return config
 
 
+def glant_v8_config() -> ConfigDict:
+    config = glant_config()
+
+    config.architecture = (
+        "simple k-hop GATv2 bank with node-wise independent hop weights"
+    )
+    config.glant_version = "v8"
+    config.conv_type = "glant_v8"
+
+    config.use_zero_hop = False
+    config.num_layers = 2
+    config.hidden_channels = 32
+    config.heads = 8
+    config.concat = False
+
+    config.max_hops = 2
+    config.alpha = 0.0
+    config.sparsify_hops = True
+    config.sparsifier_cache_masks = True
+
+    config.sampling_method = "balanced_unique_select"
+    config.num_samples = None
+    config.num_edges = 15000
+    config.sample_pool_edges = 40000
+
+    config.dropout = 0.7
+    config.attn_dropout = 0.45
+
+    config.pre_linear = False
+    config.residual = False
+    config.norm = "layernorm"
+    config.act = "elu"
+
+    config.negative_slope = 0.2
+    config.add_self_loops = True
+    config.bias = True
+    config.edge_dim = None
+    config.fill_value = "mean"
+    config.classifier_bias = True
+
+    config.log_hop_diagnostics = True
+    config.log_hop_weights = True
+    config.log_attention_scores = "auto"
+    config.log_attention_statistics = "auto"
+    config.hop_log_every = 50
+    config.hop_log_only_layer = 0
+
+    config.training = training_config(
+        lr=0.002,
+        weight_decay=2e-3,
+        num_epochs=500,
+        scheduler_name="plateau",
+    )
+
+    return config
+
+
 def gat_config() -> ConfigDict:
     config = glant_config()
 
