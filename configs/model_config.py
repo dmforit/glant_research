@@ -364,7 +364,6 @@ def glant_v8_config() -> ConfigDict:
     config.sampling_method = "balanced_unique_select"
     config.num_samples = None
     config.num_edges = 15000
-    config.sample_pool_edges = 40000
 
     config.dropout = 0.7
     config.attn_dropout = 0.45

@@ -103,16 +103,9 @@ SEARCH_SPACE["GLANT_v8"] = {
     "max_hops": [1, 2, 3, 4],
     "alpha": [0.3, 0.5, 0.75, 0.85, 1.0],
     "num_edges": [10000, 15000, 25000, 40000],
-    "sample_pool_edges": [40000],
-    "num_layers": [2],
     "hidden_channels": [32, 48, 64],
     "heads": [4, 8],
-    "dropout": [0.5, 0.6, 0.7],
-    "attn_dropout": [0.35, 0.45, 0.55],
-    "norm": ["layernorm"],
-    "act": ["elu", "relu"],
-    "lr": [0.002, 0.003, 0.004, 0.005],
-    "weight_decay": [1e-3, 1.5e-3, 2e-3, 3e-3],
+    "use_zero_hop": [False, True],
 }
 
 
@@ -198,14 +191,23 @@ def apply_trial_params(config: Any, model_name: str, params: dict[str, Any]) -> 
     model_config.num_edges = int(params["num_edges"])
     if "sample_pool_edges" in params:
         model_config.sample_pool_edges = int(params["sample_pool_edges"])
-    model_config.num_layers = int(params["num_layers"])
-    model_config.hidden_channels = int(params["hidden_channels"])
-    model_config.heads = int(params["heads"])
-    model_config.dropout = float(params["dropout"])
-    model_config.attn_dropout = float(params.get("attn_dropout", params["dropout"]))
-    model_config.norm = str(params["norm"])
+    if "num_layers" in params:
+        model_config.num_layers = int(params["num_layers"])
+    if "hidden_channels" in params:
+        model_config.hidden_channels = int(params["hidden_channels"])
+    if "heads" in params:
+        model_config.heads = int(params["heads"])
+    if "dropout" in params:
+        model_config.dropout = float(params["dropout"])
+        model_config.attn_dropout = float(params.get("attn_dropout", params["dropout"]))
+    elif "attn_dropout" in params:
+        model_config.attn_dropout = float(params["attn_dropout"])
+    if "norm" in params:
+        model_config.norm = str(params["norm"])
     if "act" in params:
         model_config.act = str(params["act"])
+    if "use_zero_hop" in params:
+        model_config.use_zero_hop = bool(params["use_zero_hop"])
 
     if model_name == "GLANT_v2":
         model_config.lambda_higher = float(params["lambda_higher"])
@@ -226,8 +228,9 @@ def apply_trial_params(config: Any, model_name: str, params: dict[str, Any]) -> 
         }
         model_config.hop_scalar_init = hop_profiles[str(params["hop_scalar_profile"])]
 
-    if model_name in {"GLANT_v7", "GLANT_v8"}:
+    if "lr" in params:
         model_config.training.lr = float(params["lr"])
+    if "weight_decay" in params:
         model_config.training.weight_decay = float(params["weight_decay"])
 
 
