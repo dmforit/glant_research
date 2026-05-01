@@ -501,6 +501,29 @@ def write_hop_run_start(
     path.parent.mkdir(parents=True, exist_ok=True)
 
 
+def flush_run_logs(
+    *,
+    metrics_rows: List[Dict[str, Any]],
+    raw_dir: Optional[Path],
+    model_name: str,
+    model_config: ConfigDict,
+    hop_summary_path: str,
+) -> None:
+    if raw_dir is None:
+        return
+
+    write_metrics_csv(metrics_rows, raw_dir / "metrics.csv")
+
+    if is_glant_model(model_name, model_config):
+        export_glant_diagnostics(
+            hop_summary_path=hop_summary_path,
+            raw_dir=raw_dir,
+            write_attention=config_bool(
+                getattr(model_config, "log_attention_statistics", False)
+            ),
+        )
+
+
 def train_model(
     model_config: ConfigDict,
     model: nn.Module,
@@ -641,18 +664,21 @@ def train_model(
                 best_val_acc,
                 best_test_acc,
             )
-
-    if raw_dir is not None:
-        write_metrics_csv(metrics_rows, raw_dir / "metrics.csv")
-
-        if is_glant_model(model_name, model_config):
-            export_glant_diagnostics(
-                hop_summary_path=path,
+            flush_run_logs(
+                metrics_rows=metrics_rows,
                 raw_dir=raw_dir,
-                write_attention=config_bool(
-                    getattr(model_config, "log_attention_statistics", False)
-                ),
+                model_name=model_name,
+                model_config=model_config,
+                hop_summary_path=path,
             )
+
+    flush_run_logs(
+        metrics_rows=metrics_rows,
+        raw_dir=raw_dir,
+        model_name=model_name,
+        model_config=model_config,
+        hop_summary_path=path,
+    )
 
     return train_losses, val_losses
 
