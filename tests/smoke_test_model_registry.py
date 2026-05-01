@@ -11,6 +11,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from configs.config import all_config
+from model import HopEdgeSparsifier
 from utils.model_names import canonical_model_name
 from utils.model_utils import create_model
 
@@ -50,6 +51,21 @@ def synthetic_graph() -> tuple[torch.Tensor, torch.Tensor, list[torch.Tensor], C
 def check_output(name: str, out: torch.Tensor, num_nodes: int, num_classes: int) -> None:
     assert out.shape == (num_nodes, num_classes), f"{name}: got {tuple(out.shape)}"
     assert torch.isfinite(out).all(), f"{name}: output contains non-finite values"
+
+
+def check_hop_edge_sparsifier_keep_probability() -> None:
+    edges = [torch.zeros(2, 10_000, dtype=torch.long) for _ in range(4)]
+    sparsifier = HopEdgeSparsifier(alpha=0.5, cache_masks=False)
+
+    with torch.no_grad():
+        out = sparsifier(edges)
+
+    kept = [edge.size(1) / edges[0].size(1) for edge in out]
+    assert kept[0] == 1.0
+    assert 0.45 <= kept[1] <= 0.55, kept
+    assert 0.20 <= kept[2] <= 0.30, kept
+    assert 0.10 <= kept[3] <= 0.15, kept
+    print(f"ok sparsifier keep rates alpha^k {[round(value, 3) for value in kept]}")
 
 
 def main() -> None:
@@ -93,6 +109,8 @@ def main() -> None:
         out = model(x=x, edge_index=edge_index_list[:2], edge_attr=None)
     check_output("glant_v1", out, x.size(0), ds_config.out_channels)
     print(f"ok glant_v1 K=2 {tuple(out.shape)}")
+
+    check_hop_edge_sparsifier_keep_probability()
 
 
 if __name__ == "__main__":

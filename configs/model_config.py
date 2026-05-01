@@ -350,14 +350,14 @@ def glant_v8_config() -> ConfigDict:
     config.glant_version = "v8"
     config.conv_type = "glant_v8"
 
-    config.use_zero_hop = False
+    config.use_zero_hop = True
     config.num_layers = 2
     config.hidden_channels = 32
     config.heads = 8
     config.concat = False
 
-    config.max_hops = 2
-    config.alpha = 0.0
+    config.max_hops = 4
+    config.alpha = 0.85
     config.sparsify_hops = True
     config.sparsifier_cache_masks = True
 

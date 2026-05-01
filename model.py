@@ -104,10 +104,10 @@ class HopEdgeSparsifier(nn.Module):
         if edge_index.dim() != 2 or edge_index.size(0) != 2:
             raise ValueError(f"{name} must have shape [2, num_edges]")
 
-    def _drop_prob(self, k: int) -> float:
+    def _keep_prob(self, k: int) -> float:
         if k < 1:
             raise ValueError("k must be >= 1 for higher-order hops")
-        return (1.0 - self.alpha) ** k
+        return self.alpha ** k
 
     def _mask_key(self, k: int, edge_index: Tensor) -> MaskKey:
         return (k, edge_index.data_ptr(), edge_index.size(1), edge_index.device)
@@ -118,15 +118,15 @@ class HopEdgeSparsifier(nn.Module):
         if num_edges == 0:
             return torch.empty(0, device=edge_index.device, dtype=torch.bool)
 
-        p_drop = self._drop_prob(k)
+        p_keep = self._keep_prob(k)
 
-        if p_drop <= 0.0:
-            return torch.ones(num_edges, device=edge_index.device, dtype=torch.bool)
-
-        if p_drop >= 1.0:
+        if p_keep <= 0.0:
             return torch.zeros(num_edges, device=edge_index.device, dtype=torch.bool)
 
-        return torch.rand(num_edges, device=edge_index.device) >= p_drop
+        if p_keep >= 1.0:
+            return torch.ones(num_edges, device=edge_index.device, dtype=torch.bool)
+
+        return torch.rand(num_edges, device=edge_index.device) < p_keep
 
     def _get_mask(self, edge_index: Tensor, k: int) -> Tensor:
         if not self.cache_masks:
@@ -1367,11 +1367,16 @@ class GLANTv8Conv(nn.Module):
             messages.append(msg)
 
         messages_t = torch.stack(messages, dim=1)
-        logits = self.hop_gate(x)[:, : messages_t.size(1)]
-        weights = torch.sigmoid(logits).masked_fill(
-            torch.tensor(empty_hops, device=x.device, dtype=torch.bool).unsqueeze(0),
-            0.0,
-        )
+        if self.max_hops == 1 and not self.use_zero_hop:
+            logits = x.new_zeros(x.size(0), messages_t.size(1))
+            weights = x.new_ones(x.size(0), messages_t.size(1))
+        else:
+            logits = self.hop_gate(x)[:, : messages_t.size(1)]
+            weights = torch.sigmoid(logits)
+
+        empty_t = torch.tensor(empty_hops, device=x.device, dtype=torch.bool)
+        if empty_t.any():
+            weights = weights.masked_fill(empty_t.unsqueeze(0), 0.0)
         out = (messages_t * weights.unsqueeze(-1)).flatten(start_dim=1)
 
         if return_hop_diagnostics:
@@ -1388,7 +1393,9 @@ class GLANTv8Conv(nn.Module):
                 "attention": attention,
                 "weight_hop_offset": 0,
                 "attention_hop_offset": int(self.use_zero_hop),
-                "hop_scalars": torch.sigmoid(self.hop_gate.bias[: messages_t.size(1)]).detach(),
+                "hop_scalars": weights[0].detach()
+                if self.max_hops == 1 and not self.use_zero_hop
+                else torch.sigmoid(self.hop_gate.bias[: messages_t.size(1)]).detach(),
             }
         return out
 
