@@ -36,6 +36,7 @@ DEFAULT_MODELS = [
     "glant_v6",
     "glant_v6p1",
     "glant_v7",
+    "glant_v8",
 ]
 DEFAULT_TRIALS = {
     "GLANT_v1": 10,
@@ -46,6 +47,7 @@ DEFAULT_TRIALS = {
     "GLANT_v6": 10,
     "GLANT_v6p1": 10,
     "GLANT_v7": 10,
+    "GLANT_v8": 10,
 }
 
 
@@ -97,6 +99,21 @@ SEARCH_SPACE["GLANT_v7"] = {
     "hop_scalar_profile": ["one_hop_strong", "balanced", "front_loaded"],
     "weight_decay": [1e-3, 1.5e-3, 2e-3, 3e-3, 5e-3],
 }
+SEARCH_SPACE["GLANT_v8"] = {
+    "max_hops": [1, 2, 3, 4],
+    "alpha": [0.3, 0.5, 0.75, 0.85, 1.0],
+    "num_edges": [10000, 15000, 25000, 40000],
+    "sample_pool_edges": [40000],
+    "num_layers": [2],
+    "hidden_channels": [32, 48, 64],
+    "heads": [4, 8],
+    "dropout": [0.5, 0.6, 0.7],
+    "attn_dropout": [0.35, 0.45, 0.55],
+    "norm": ["layernorm"],
+    "act": ["elu", "relu"],
+    "lr": [0.002, 0.003, 0.004, 0.005],
+    "weight_decay": [1e-3, 1.5e-3, 2e-3, 3e-3],
+}
 
 
 def max_search_hops(model_names: list[str]) -> int:
@@ -128,6 +145,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--trials-v6", type=int, default=DEFAULT_TRIALS["GLANT_v6"])
     parser.add_argument("--trials-v6p1", type=int, default=DEFAULT_TRIALS["GLANT_v6p1"])
     parser.add_argument("--trials-v7", type=int, default=DEFAULT_TRIALS["GLANT_v7"])
+    parser.add_argument("--trials-v8", type=int, default=DEFAULT_TRIALS["GLANT_v8"])
     parser.add_argument("--trial-limit", type=int, default=None)
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
@@ -159,7 +177,9 @@ def trial_count(model_name: str, args: argparse.Namespace) -> int:
         return int(args.trials_v6p1)
     if model_name == "GLANT_v7":
         return int(args.trials_v7)
-    raise ValueError(f"HPO supports only GLANT_v1..GLANT_v7, got {model_name}")
+    if model_name == "GLANT_v8":
+        return int(args.trials_v8)
+    raise ValueError(f"HPO supports only GLANT_v1..GLANT_v8, got {model_name}")
 
 
 def suggest_params(trial: optuna.Trial, model_name: str) -> dict[str, Any]:
@@ -205,6 +225,8 @@ def apply_trial_params(config: Any, model_name: str, params: dict[str, Any]) -> 
             "low_high_hops": [0.95, 0.25, 0.1],
         }
         model_config.hop_scalar_init = hop_profiles[str(params["hop_scalar_profile"])]
+
+    if model_name in {"GLANT_v7", "GLANT_v8"}:
         model_config.training.lr = float(params["lr"])
         model_config.training.weight_decay = float(params["weight_decay"])
 
@@ -463,6 +485,7 @@ def main() -> None:
             "GLANT_v6",
             "GLANT_v6p1",
             "GLANT_v7",
+            "GLANT_v8",
         ):
             getattr(base_config.baselines, model_name).training.num_epochs = int(args.epochs)
 
@@ -492,8 +515,9 @@ def main() -> None:
                 "GLANT_v6",
                 "GLANT_v6p1",
                 "GLANT_v7",
+                "GLANT_v8",
             }:
-                raise ValueError(f"HPO supports only GLANT_v1..GLANT_v7, got {model_name}")
+                raise ValueError(f"HPO supports only GLANT_v1..GLANT_v8, got {model_name}")
 
             n_trials = trial_count(model_name, args)
             sampler = optuna.samplers.TPESampler(seed=args.seed)
