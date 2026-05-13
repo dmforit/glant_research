@@ -1,0 +1,5 @@
+epoch,phase,layer_id,hop,stat_name,stat_value
+0,val,0,0,attention_norm_entropy_mean,0.6725742220878601
+0,val,1,0,attention_norm_entropy_mean,0.139376699924469
+0,test,0,0,attention_norm_entropy_mean,0.6725742220878601
+0,test,1,0,attention_norm_entropy_mean,0.139376699924469

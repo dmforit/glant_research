@@ -78,13 +78,13 @@ def glant_config() -> ConfigDict:
     config.num_layers = 2
     config.hidden_channels = 64
     config.heads = 8
-    config.concat = False
+    config.concat = True
 
     config.max_hops = 4
     config.alpha = 1.0
 
-    config.dropout = 0.7
-    config.attn_dropout = 0.7
+    config.dropout = 0.6
+    config.attn_dropout = 0.6
     config.gate_hidden = None
     config.gate_dropout = 0.3
 
@@ -95,7 +95,7 @@ def glant_config() -> ConfigDict:
 
     config.negative_slope = 0.2
     config.add_self_loops = True
-    config.bias = False
+    config.bias = True
     config.edge_dim = None
     config.fill_value = "mean"
 
@@ -120,7 +120,7 @@ def glant_config() -> ConfigDict:
     config.walk.use_cosine = True
 
     config.training = training_config(
-        lr=0.01,
+        lr=0.005,
         weight_decay=5e-4,
         num_epochs=300,
         scheduler_name="plateau",
@@ -351,22 +351,23 @@ def glant_v8_config() -> ConfigDict:
     config.conv_type = "glant_v8"
 
     config.use_zero_hop = True
+    config.v8_use_classifier = True
     config.num_layers = 2
-    config.hidden_channels = 32
+    config.hidden_channels = 128
     config.heads = 8
-    config.concat = False
+    config.concat = True
 
     config.max_hops = 4
-    config.alpha = 0.85
+    config.alpha = 0.2
     config.sparsify_hops = True
     config.sparsifier_cache_masks = True
 
     config.sampling_method = "balanced_unique_select"
     config.num_samples = None
-    config.num_edges = 15000
+    config.num_edges = 90000
 
-    config.dropout = 0.7
-    config.attn_dropout = 0.45
+    config.dropout = 0.2
+    config.attn_dropout = 0.2
 
     config.pre_linear = False
     config.residual = False
@@ -385,11 +386,11 @@ def glant_v8_config() -> ConfigDict:
     config.log_attention_scores = "auto"
     config.log_attention_statistics = "auto"
     config.hop_log_every = 50
-    config.hop_log_only_layer = 0
+    config.hop_log_only_layer = None
 
     config.training = training_config(
-        lr=0.002,
-        weight_decay=2e-3,
+        lr=0.005,
+        weight_decay=5e-4,
         num_epochs=500,
         scheduler_name="plateau",
     )
@@ -418,6 +419,29 @@ def gatv2_config() -> ConfigDict:
     config.sparsify_hops = False
     config.share_weights = False
     config.log_hop_diagnostics = False
+
+    config.num_layers = 2
+    config.hidden_channels = 64
+    config.heads = 8
+    config.concat = True
+
+    config.dropout = 0.6
+    config.attn_dropout = 0.6
+    config.pre_linear = False
+    config.residual = False
+    config.norm = "none"
+    config.act = "elu"
+
+    config.negative_slope = 0.2
+    config.add_self_loops = True
+    config.bias = True
+
+    config.training = training_config(
+        lr=0.005,
+        weight_decay=5e-4,
+        num_epochs=300,
+        scheduler_name="plateau",
+    )
 
     return config
 

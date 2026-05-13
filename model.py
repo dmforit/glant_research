@@ -1291,15 +1291,23 @@ class GLANTv8Conv(nn.Module):
         bias: bool = True,
         residual: bool = False,
         use_zero_hop: bool = True,
+        output_mode: str = "flatten",
         **kwargs,
     ) -> None:
         super().__init__()
         self.max_hops = int(max_hops)
         self.edge_dim = edge_dim
         self.use_zero_hop = bool(use_zero_hop)
+        self.output_mode = str(output_mode).lower()
+        if self.output_mode not in {"flatten", "sum"}:
+            raise ValueError("GLANTv8Conv output_mode must be 'flatten' or 'sum'")
         self.hop_dim = out_channels * heads if concat else out_channels
         self.num_branches = self.max_hops + int(self.use_zero_hop)
-        self.output_dim = self.hop_dim * self.num_branches
+        self.output_dim = (
+            self.hop_dim * self.num_branches
+            if self.output_mode == "flatten"
+            else self.hop_dim
+        )
         self.zero_hop = nn.Linear(in_channels, self.hop_dim, bias=bias) if self.use_zero_hop else None
         self.convs = nn.ModuleList([
             GATv2Conv(
@@ -1377,7 +1385,11 @@ class GLANTv8Conv(nn.Module):
         empty_t = torch.tensor(empty_hops, device=x.device, dtype=torch.bool)
         if empty_t.any():
             weights = weights.masked_fill(empty_t.unsqueeze(0), 0.0)
-        out = (messages_t * weights.unsqueeze(-1)).flatten(start_dim=1)
+        weighted_messages = messages_t * weights.unsqueeze(-1)
+        if self.output_mode == "sum":
+            out = weighted_messages.sum(dim=1)
+        else:
+            out = weighted_messages.flatten(start_dim=1)
 
         if return_hop_diagnostics:
             return out, {
@@ -1391,7 +1403,8 @@ class GLANTv8Conv(nn.Module):
                 "messages_shape": list(messages_t.shape),
                 "empty_hops": [bool(value) for value in empty_hops],
                 "attention": attention,
-                "weight_hop_offset": 0,
+                "weight_hop_offset": 0 if self.use_zero_hop else 1,
+                "hop_scalar_hop_offset": 0 if self.use_zero_hop else 1,
                 "attention_hop_offset": int(self.use_zero_hop),
                 "hop_scalars": weights[0].detach()
                 if self.max_hops == 1 and not self.use_zero_hop
@@ -2031,21 +2044,29 @@ class GLANT(nn.Module):
         )
 
     def _init_glant_v8(self, input_dim: int) -> None:
-        num_layers = max(self.num_layers - 1, 1)
+        self.v8_use_classifier = bool(cfg_get(self.model_config, "v8_use_classifier", True))
+        num_layers = max(self.num_layers - 1, 1) if self.v8_use_classifier else self.num_layers
         layer_input_dim = input_dim
         layer_output_dim = input_dim
 
-        for _ in range(num_layers):
-            conv = self._make_glant_v8(layer_input_dim, self.hidden_channels, False)
+        for layer_idx in range(num_layers):
+            is_last = not self.v8_use_classifier and layer_idx == num_layers - 1
+            out_dim = self.out_channels if is_last else self.hidden_channels
+            conv = self._make_glant_v8(layer_input_dim, out_dim, is_last)
             self.convs.append(conv)
             layer_output_dim = conv.output_dim
-            self.norms.append(self._make_norm(layer_output_dim))
+            if not is_last:
+                self.norms.append(self._make_norm(layer_output_dim))
             layer_input_dim = layer_output_dim
 
-        self.v8_classifier = nn.Linear(
-            layer_output_dim,
-            self.out_channels,
-            bias=bool(cfg_get(self.model_config, "classifier_bias", True)),
+        self.v8_classifier = (
+            nn.Linear(
+                layer_output_dim,
+                self.out_channels,
+                bias=bool(cfg_get(self.model_config, "classifier_bias", True)),
+            )
+            if self.v8_use_classifier
+            else None
         )
 
     def _attention_args(self, out_dim: int, is_last: bool) -> dict[str, Any]:
@@ -2259,6 +2280,13 @@ class GLANT(nn.Module):
             bias=bool(cfg_get(self.model_config, "bias", True)),
             residual=bool(cfg_get(self.model_config, "conv_residual", False)),
             use_zero_hop=bool(cfg_get(self.model_config, "use_zero_hop", True)),
+            output_mode=(
+                "sum"
+                if self.is_glant_v8
+                and not bool(cfg_get(self.model_config, "v8_use_classifier", True))
+                and is_last
+                else "flatten"
+            ),
             **self._attention_args(out_dim, is_last),
         )
 
@@ -2357,7 +2385,8 @@ class GLANT(nn.Module):
         if self.pre_lin is not None:
             self.pre_lin.reset_parameters()
 
-        self.v8_classifier.reset_parameters()
+        if self.v8_classifier is not None:
+            self.v8_classifier.reset_parameters()
 
         for conv in self.convs:
             conv.reset_parameters()
@@ -2620,6 +2649,9 @@ class GLANT(nn.Module):
         one_hop_weight = diagnostics.get("one_hop_weight")
         higher_order_weight = diagnostics.get("higher_order_weight")
         weight_hop_offset = int(diagnostics.get("weight_hop_offset", 0))
+        hop_scalar_hop_offset = int(
+            diagnostics.get("hop_scalar_hop_offset", weight_hop_offset)
+        )
         attention_hop_offset = int(diagnostics.get("attention_hop_offset", 0))
 
         log_attention_metrics = (
@@ -2669,6 +2701,7 @@ class GLANT(nn.Module):
                 else None
             ),
             "weight_hop_offset": weight_hop_offset,
+            "hop_scalar_hop_offset": hop_scalar_hop_offset,
             "attention": attention_stats,
             "hop_logits_shape": list(hop_logits.shape) if hop_logits is not None else None,
             "higher_logits_shape": list(higher_logits.shape) if higher_logits is not None else None,
@@ -2925,6 +2958,7 @@ class GLANT(nn.Module):
             row,
             "hop_scalar",
             event.get("hop_scalars"),
+            offset=int(event.get("hop_scalar_hop_offset", 0) or 0),
         )
 
         for hop_item in event.get("attention", []) or []:
@@ -3196,11 +3230,14 @@ class GLANT(nn.Module):
             else:
                 h = conv_out
 
-            h = self.norms[layer_id](h)
-            h = self._activate(h)
-            h = F.dropout(h, p=self.dropout, training=self.training)
+            if layer_id < len(self.norms):
+                h = self.norms[layer_id](h)
+                h = self._activate(h)
+                h = F.dropout(h, p=self.dropout, training=self.training)
 
-        return self.v8_classifier(h)
+        if self.v8_classifier is not None:
+            return self.v8_classifier(h)
+        return h
 
     def forward(
         self,

@@ -80,6 +80,31 @@ def model_args(values: List[str]) -> List[str]:
     return names
 
 
+def selected_hop_aware_model_configs(config: Any) -> List[Any]:
+    """Return selected baseline configs that consume sampled hop edge lists."""
+    targets: List[Any] = []
+    for model_name in config.baselines.names:
+        canonical = canonical_model_name(model_name)
+        model_config = config.baselines.get(canonical)
+        if model_config is None:
+            continue
+
+        conv_type = str(getattr(model_config, "conv_type", "")).lower()
+        if conv_type in HOP_AWARE_CONV_TYPES:
+            targets.append(model_config)
+
+    return targets
+
+
+def glant_cli_override_targets(config: Any) -> List[Any]:
+    """Return GLANT-like configs affected by hop sampling CLI flags."""
+    targets = selected_hop_aware_model_configs(config)
+    if targets:
+        return targets
+
+    return [config.baselines.GLANT]
+
+
 def apply_cli_overrides(config: Any, pargs: argparse.Namespace) -> None:
     if pargs.runs is not None:
         config.experiments.runs = pargs.runs
@@ -115,23 +140,29 @@ def apply_cli_overrides(config: Any, pargs: argparse.Namespace) -> None:
 
     if pargs.method is not None:
         logger.info("Starting run with sampling method")
-        config.baselines.names = ["GLANT"]
-        config.baselines.GLANT.load_samples = False
-        config.baselines.GLANT.sampling_method = pargs.method
+        if pargs.model is None:
+            config.baselines.names = ["GLANT"]
+        for model_config in glant_cli_override_targets(config):
+            model_config.load_samples = False
+            model_config.sampling_method = pargs.method
 
     if pargs.khop is not None:
-        config.baselines.GLANT.max_hops = pargs.khop
-        config.baselines.GLANT.load_samples = False
+        for model_config in glant_cli_override_targets(config):
+            model_config.max_hops = pargs.khop
+            model_config.load_samples = False
 
     if pargs.alpha is not None:
-        config.baselines.GLANT.alpha = pargs.alpha
+        for model_config in glant_cli_override_targets(config):
+            model_config.alpha = pargs.alpha
 
     if pargs.num_samples is not None:
-        config.baselines.GLANT.num_samples = pargs.num_samples
-        config.baselines.GLANT.load_samples = False
+        for model_config in glant_cli_override_targets(config):
+            model_config.num_samples = pargs.num_samples
+            model_config.load_samples = False
 
     if pargs.load_samples:
-        config.baselines.GLANT.load_samples = True
+        for model_config in glant_cli_override_targets(config):
+            model_config.load_samples = True
 
     if pargs.conv_type is not None:
         config.baselines.GLANT.conv_type = pargs.conv_type

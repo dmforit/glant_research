@@ -402,6 +402,7 @@ def entity_dataset(
     graph.y, masks = entity_labels_and_masks(graph, cfg, device)
     for split, mask in masks.items():
         setattr(graph, mask_name(split), mask)
+    graph.labeled_mask = masks["train"] | masks["val"] | masks["test"]
 
     set_dynamic_cfg(cfg, graph)
     return SingleGraphDataset(graph)
@@ -530,6 +531,8 @@ def hetero_to_homogeneous(data: Any, cfg: ConfigDict, device: torch.device) -> D
     target_start = offsets[target]
     target_stop = target_start + int(target_store.num_nodes)
     y[target_start:target_stop] = y_target
+    labeled_mask = torch.zeros(total_nodes, dtype=torch.bool)
+    labeled_mask[target_start:target_stop] = True
 
     masks = target_masks(
         total_nodes,
@@ -545,6 +548,7 @@ def hetero_to_homogeneous(data: Any, cfg: ConfigDict, device: torch.device) -> D
         train_mask=masks["train"],
         val_mask=masks["val"],
         test_mask=masks["test"],
+        labeled_mask=labeled_mask,
         num_nodes=total_nodes,
     ).to(device)
     set_dynamic_cfg(cfg, graph)

@@ -1,0 +1,2 @@
+epoch,train_loss,val_loss,test_loss,train_metric,val_metric,test_metric,lr,best_val_metric,best_test_metric,best_epoch,metric_name,metric_direction,run_mode,seed
+0,1.0975542068481445,1.270984411239624,1.771436095237732,0.3774104683195592,0.3314917127071823,0.3432483474976393,0.05,0.3314917127071823,0.3432483474976393,0,Accuracy,higher,final,42
